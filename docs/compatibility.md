@@ -4,7 +4,7 @@ The unreleased `gws-workspace` v0.10.0 candidate requires no Hermes core patch. 
 
 ## Pinned baseline
 
-The repository tests/CI pin Hermes commit `f7e2898aaefc8f967dbf7345e3999a65672fe60e` and native `gws` 0.22.5. The `requires_hermes: >=0.23.2` manifest gate is not evidence that every newer host works, nor a claim that this worktree has passed CI.
+The repository tests/CI pin unchanged Hermes commit `0f602c5f6f18615632535251d62a2db74ce93b69` and native `gws` 0.22.5. The `requires_hermes: >=0.23.2` manifest gate is not evidence that every newer host works. See the [verification record](verification.md) for the candidate checks and remaining live-test gap.
 
 [The workflow](../.github/workflows/ci.yml) is the reproducible environment specification: Python 3.14 with the pinned Hermes lockfile, PyYAML 6.0.3, aiohttp 3.14.5, `google-auth[requests]>=2.40,<3`, and a checksum-verified native CLI. It runs unittest discovery with isolated homes and no inherited Google credentials, rejects skips, then runs plugin validation and Doctor. Do not duplicate that setup with an unpinned host and call it the same baseline.
 

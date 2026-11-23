@@ -10,7 +10,7 @@ native_accounts = None
 
 
 class _PluginClient:
-    """Bound native gws transport for the three watch tools."""
+    """Bound native gws transport for the three watch services."""
 
     def __init__(self, home, gws_bin):
         self.root = home / "gws-oauth"  # Preserve existing account slots during migration.
