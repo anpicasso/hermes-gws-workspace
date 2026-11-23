@@ -1,6 +1,6 @@
 # Targeted Workspace watches: operator setup
 
-The unreleased v0.10.0 candidate changes how a user starts and manages a watch, not the Google accounts, worker or delivery routes. [Native `gws` owns authentication](login.md); no Python OAuth export/refresh or Pub/Sub pull is used.
+v0.10.0 changes how a user starts and manages a watch, not the Google accounts, worker or delivery routes. [Native `gws` owns authentication](login.md); no Python OAuth export/refresh or Pub/Sub pull is used.
 
 ## Provision Google ingress
 

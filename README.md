@@ -8,10 +8,10 @@ Multi-account Google Workspace access through the [native `gws` CLI](https://git
 
 Requirements: Hermes with the [plugin APIs listed here](docs/compatibility.md), native `gws` (tested baseline 0.22.5), and the Python dependencies declared in `plugin.yaml` (PyYAML, aiohttp and google-auth with requests). Watches require POSIX locking and a separately supervised worker. No binary, cloud provisioning or worker auto-start is included.
 
-This README describes the **unreleased v0.10.0 candidate**: watches use a slash command on unmodified Hermes. The published **v0.9.1** still uses agent watch tools; the install below gets that release, not the candidate.
+**v0.10.0** uses short user-confirmed watch commands on unmodified Hermes; no core patch is required.
 
 ```bash
-hermes plugins install anpicasso/hermes-gws-workspace --ref v0.9.1 --enable
+hermes plugins install anpicasso/hermes-gws-workspace --ref v0.10.0 --enable
 hermes config set plugins.entries.gws-workspace.settings.gws_bin /absolute/path/to/gws
 ```
 
@@ -47,7 +47,7 @@ The optional [hermes-gws-remote-auth](https://github.com/anpicasso/hermes-gws-re
 
 Load the bundled operational skill with `skill_view("gws-workspace:workspace")` for accounts, watch commands and public HTTPS ingress options.
 
-The candidate registers **16 tools**, two hooks (`pre_tool_call`, `pre_gateway_dispatch`) and the `/gws-watch` command:
+The plugin registers **16 tools**, two hooks (`pre_tool_call`, `pre_gateway_dispatch`) and the `/gws-watch` command:
 
 - Accounts: `gws_accounts` (list or sanitized native health).
 - Gmail: `gws_gmail_search`, `gws_gmail_read`, `gws_gmail_draft`, `gws_gmail_send`.
@@ -113,4 +113,4 @@ hermes plugins doctor . --ci
 hermes plugins validate . --json
 ```
 
-User testing of the slash command with live Google delivery is pending. [Verification records](docs/verification.md) distinguish earlier release results from this candidate. [Catalog PR #157482](https://github.com/NousResearch/hermes-agent/pull/157482) remains a draft; the [proposed upstream API for agent tools](docs/catalog-policy.md#upstream-follow-up-trusted-origin-for-agent-tools) is separate.
+The suite passed **231 tests, zero skips**. Live short-command tests covered Drive and Gmail in `same_session`, and Calendar in `new_session`; [verification records](docs/verification.md) describe the observed delivery evidence and limits. [Catalog PR #157482](https://github.com/NousResearch/hermes-agent/pull/157482) requests review; the [proposed upstream API for agent tools](docs/catalog-policy.md#upstream-follow-up-trusted-origin-for-agent-tools) is separate.

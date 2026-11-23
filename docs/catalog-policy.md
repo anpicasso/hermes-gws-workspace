@@ -2,7 +2,7 @@
 
 ## Distribution and credential ownership
 
-`gws-workspace` v0.9.1 is the published release; v0.10.0 is an unreleased candidate. [Catalog PR #157482](https://github.com/NousResearch/hermes-agent/pull/157482) is a draft pending user live testing. Validation checks do not establish compliance with the [catalog admission rules](https://github.com/NousResearch/hermes-agent/blob/05348a3094a2356b9a271a2f22cdd6711c9952b8/plugin-catalog/README.md) or imply Nous Research endorsement.
+`gws-workspace` v0.10.0 is distributed independently through its [release](https://github.com/anpicasso/hermes-gws-workspace/releases/tag/v0.10.0). [Catalog PR #157482](https://github.com/NousResearch/hermes-agent/pull/157482) requests maintainer review following the [live tests](verification.md). Validation checks do not establish compliance with the [catalog admission rules](https://github.com/NousResearch/hermes-agent/blob/05348a3094a2356b9a271a2f22cdd6711c9952b8/plugin-catalog/README.md) or imply Nous Research endorsement.
 
 Native `gws`, not Python or Hermes' credential broker, owns Google credential storage, decryption and refresh. The public adapter selects an explicitly provisioned account directory and invokes short, locked native commands. It does not export OAuth credentials, refresh access tokens in Python, implement login, or register `gws_login`/`gws_logout`. The optional, separately distributed `hermes-gws-remote-auth` companion (`gws-remote-auth` plugin) is separately installed and is not required for public operation.
 
@@ -10,7 +10,7 @@ This still differs from rule 11's Hermes-managed `oauth:` declaration, `hermes a
 
 ## Public host surfaces and operator responsibility
 
-The candidate registers `/gws-watch` with `ctx.register_command` and reads origin only from host command metadata in the registered profile/home. It removes the three agent watch activation/management tools and their private session/delegation imports; no core patch is required. A local-only `gws_watch_prepare` tool creates an expiring draft; the user activates it with `/gws-watch confirmar CODE`. Preparation does not contact Google or authorize delivery. Tool approval and `ctx.inject_message` are unchanged. Operators provision routes through public Hermes commands and configure exact route attestations; see [the route contract](routes-contract.md).
+The plugin registers `/gws-watch` with `ctx.register_command` and reads origin only from host command metadata in the registered profile/home. It removes the three agent watch activation/management tools and their private session/delegation imports; no core patch is required. A local-only `gws_watch_prepare` tool creates an expiring draft; the user activates it with `/gws-watch confirmar CODE`. Preparation does not contact Google or authorize delivery. Tool approval and `ctx.inject_message` are unchanged. Operators provision routes through public Hermes commands and configure exact route attestations; see [the route contract](routes-contract.md).
 
 The attestation is not remote readback: direct receiver edits are undetectable if the plugin configuration is unchanged. Stop watches before changing receiver destinations, prompts, skills, signature mode or secrets, and verify the receiver through its public CLI. Config digest checks prevent silent retargeting through changed plugin configuration, not malicious operator behavior.
 
@@ -18,7 +18,7 @@ The attestation is not remote readback: direct receiver edits are undetectable i
 
 To support direct agent-initiated activation with the same origin guarantees, the proposed approach gives Hermes a public, host-issued origin for the **current tool call**: physical session ID and route key, profile/home, current actor, platform, chat and optional thread. It should return no usable origin for unbound, mixed-actor, delegated or non-messaging calls, even when they inherit a parent route. A session ID or a process environment value alone is not proof. This proposal is separate from the catalog review and is not a dependency of the slash command.
 
-Upstream API request: [#159074](https://github.com/NousResearch/hermes-agent/issues/159074). Proposed implementation: [#159075](https://github.com/NousResearch/hermes-agent/pull/159075). These explicitly acknowledge the related admitted-origin proposal [#142762](https://github.com/NousResearch/hermes-agent/pull/142762); the plugin needs one supported contract, not competing APIs. Neither proposal is a dependency of this candidate.
+Upstream API request: [#159074](https://github.com/NousResearch/hermes-agent/issues/159074). Proposed implementation: [#159075](https://github.com/NousResearch/hermes-agent/pull/159075). These explicitly acknowledge the related admitted-origin proposal [#142762](https://github.com/NousResearch/hermes-agent/pull/142762); the plugin needs one supported contract, not competing APIs. Neither proposal is a dependency of this release.
 
 ## Approval and trust boundaries
 

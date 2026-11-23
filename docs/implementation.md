@@ -2,7 +2,7 @@
 
 ## Public adapter boundary
 
-In the unreleased v0.10.0 candidate, `__init__.py` registers 15 Workspace tools and the local `gws_watch_prepare` draft tool, `/gws-watch`, and the existing approval and gateway dispatch hooks. No agent watch activation or login/logout tools are registered. The optional `hermes-gws-remote-auth` companion is installed separately.
+In v0.10.0, `__init__.py` registers 15 Workspace tools and the local `gws_watch_prepare` draft tool, `/gws-watch`, and the existing approval and gateway dispatch hooks. No agent watch activation or login/logout tools are registered. The optional `hermes-gws-remote-auth` companion is installed separately.
 
 `router.py` selects `$HERMES_HOME/gws-oauth/accounts/<account>/` through `GOOGLE_WORKSPACE_CLI_CONFIG_DIR`, sets the file keyring backend and invokes `[gws_bin, *args]` without a shell. Account paths/files reject unsafe links. A filtered subprocess environment, isolated native HOME and empty dotenv sentinel prevent accidental adoption of inherited tokens, global ADC or ancestor dotenv credentials. Python inspects account-file metadata; native `gws` owns credential contents, decryption and refresh.
 

@@ -1,10 +1,10 @@
 # Compatibility
 
-The unreleased `gws-workspace` v0.10.0 candidate requires no Hermes core patch. Runtime compatibility is not [catalog eligibility](catalog-policy.md). The optional `hermes-gws-remote-auth` companion is a separate installation.
+`gws-workspace` v0.10.0 requires no Hermes core patch. Runtime compatibility is not [catalog eligibility](catalog-policy.md). The optional `hermes-gws-remote-auth` companion is a separate installation.
 
 ## Pinned baseline
 
-The repository tests/CI pin unchanged Hermes commit `0f602c5f6f18615632535251d62a2db74ce93b69` and native `gws` 0.22.5. The `requires_hermes: >=0.23.2` manifest gate is not evidence that every newer host works. See the [verification record](verification.md) for the candidate checks and remaining live-test gap.
+The repository tests/CI pin unchanged Hermes commit `0f602c5f6f18615632535251d62a2db74ce93b69` and native `gws` 0.22.5. The `requires_hermes: >=0.23.2` manifest gate is not evidence that every newer host works. See the [verification record](verification.md) for the automated checks, live results and coverage limits.
 
 [The workflow](../.github/workflows/ci.yml) is the reproducible environment specification: Python 3.14 with the pinned Hermes lockfile, PyYAML 6.0.3, aiohttp 3.14.5, `google-auth[requests]>=2.40,<3`, and a checksum-verified native CLI. It runs unittest discovery with isolated homes and no inherited Google credentials, rejects skips, then runs plugin validation and Doctor. Do not duplicate that setup with an unpinned host and call it the same baseline.
 
@@ -29,4 +29,4 @@ hermes plugins validate . --json
 hermes plugins doctor . --ci
 ```
 
-Inspect skips and failures rather than quoting historical passing counts. Tests exercise simulated Google transport, synthetic identities, loopback HTTP, native dry-run behavior and selected real host entry points. They do not establish real Google consent, live authenticated Pub/Sub push, remote receiver configuration, agent execution or external message delivery. Revalidate command dispatch, approval, webhook and injection behavior on upgrades. See the [candidate live-test checklist and historical evidence](verification.md).
+Inspect skips and failures rather than quoting historical passing counts. Tests exercise simulated Google transport, synthetic identities, loopback HTTP, native dry-run behavior and selected real host entry points. They do not establish real Google consent, live authenticated Pub/Sub push, remote receiver configuration, agent execution or external message delivery. Revalidate command dispatch, approval, webhook and injection behavior on upgrades. See the [live-test record and historical evidence](verification.md).
