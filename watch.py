@@ -25,6 +25,8 @@ MAX_INSTRUCTIONS = 2000
 MAX_IDS = 50
 MAX_SKILLS = 20
 MAX_BACKLOG = 1000
+MAX_DRAFTS = 64
+DRAFT_TTL_SECONDS = 600
 ACTIVE_STATES = ("active", "matched")
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@:+-]{0,1023}\Z")
@@ -218,6 +220,10 @@ def fingerprint(service, account, origin, spec):
 
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS watch_drafts (
+    code TEXT PRIMARY KEY, profile TEXT NOT NULL, session_id TEXT NOT NULL,
+    spec TEXT NOT NULL, expires_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS watches (
     watch_id TEXT PRIMARY KEY,
     service TEXT NOT NULL,
@@ -382,6 +388,17 @@ class WatchStore:
         finally:
             conn.close()
 
+    def stage_draft(self, profile, session_id, spec):
+        code = secrets.token_urlsafe(16)
+        with self.tx() as conn:
+            now = self.clock()
+            conn.execute("DELETE FROM watch_drafts WHERE expires_at<=?", (now,))
+            if conn.execute("SELECT COUNT(*) FROM watch_drafts").fetchone()[0] >= MAX_DRAFTS:
+                raise WatchError("draft_limit", "Too many pending drafts; confirm one or wait for expiry")
+            expires = now + DRAFT_TTL_SECONDS
+            conn.execute("INSERT INTO watch_drafts VALUES (?,?,?,?,?)", (code, profile, session_id, spec, expires))
+        return code, expires
+
     # --- watches ---------------------------------------------------------
     def add_watch(self, record, sources=()):
         with self.tx() as conn:
@@ -433,12 +450,13 @@ class WatchStore:
             row = conn.execute("SELECT * FROM watches WHERE watch_id=?", (watch_id,)).fetchone()
         return dict(row) if row is not None else None
 
-    def find_active(self, fingerprint, now=None):
+    def find_active(self, fingerprint, *, source_id, now=None):
         now = self.clock() if now is None else now
         with self.read() as conn:
             row = conn.execute(
-                "SELECT * FROM watches WHERE fingerprint=? AND state IN ('active','matched') "
-                "AND expires_at>? ORDER BY created_at DESC LIMIT 1", (fingerprint, now)).fetchone()
+                "SELECT w.* FROM watches w JOIN watch_sources s USING (watch_id) "
+                "WHERE fingerprint=? AND s.source_id=? AND state IN ('active','matched') "
+                "AND expires_at>? ORDER BY created_at DESC LIMIT 1", (fingerprint, source_id, now)).fetchone()
         return dict(row) if row is not None else None
 
     def list_watches(self, *, service=None, profile=None, principal=None, active_only=False):
@@ -969,6 +987,7 @@ class WatchStore:
         now = self.clock() if now is None else now
         cutoff = now - retention_seconds
         with self.tx() as conn:
+            conn.execute("DELETE FROM watch_drafts WHERE expires_at<=?", (now,))
             # ponytail: age from expires_at (no terminal timestamp column); a stop
             # can precede expiry by at most MAX_MINUTES, which only delays pruning.
             ids = [row["watch_id"] for row in conn.execute(

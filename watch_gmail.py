@@ -98,10 +98,9 @@ def _attachment_state(client, account, message_id, cache):
     return cache[message_id]
 
 
-def prepare_start(client, account, args, config):
-    started_at = time.time()
+def validate_selectors(args):
     target = args.get("target")
-    filters = args.get("filters") or {}
+    filters = args.get("filters", {})
     if not isinstance(target, dict) or set(target) - TARGET_KEYS:
         raise W.WatchError("invalid_arguments", "gmail target accepts thread_ids, message_ids or mailbox")
     forms = [key for key in TARGET_KEYS if key in target]
@@ -112,30 +111,8 @@ def prepare_start(client, account, args, config):
     form = forms[0]
     if form == "mailbox" and target["mailbox"] is not True:
         raise W.WatchError("invalid_arguments", "mailbox must be true when used")
-    if form == "thread_ids":
-        threads = W.string_list(target["thread_ids"], "thread_ids")
-        for thread_id in threads:
-            checked = _call(client, account, ["gmail", "users", "threads", "get"],
-                            {"userId": "me", "id": thread_id, "format": "metadata",
-                             "fields": "id"})
-            if not checked.get("ok"):
-                raise W.WatchError("target_not_found",
-                                   "A selected Gmail thread does not exist or is not accessible")
-        target_resolved = {"thread_ids": threads, "broad": False}
-    elif form == "message_ids":
-        message_ids = W.string_list(target["message_ids"], "message_ids")
-        threads = []
-        for message_id in message_ids:
-            meta = _message_meta(client, account, message_id)
-            thread_id = meta.get("threadId")
-            if not isinstance(thread_id, str) or not thread_id:
-                raise W.WatchError("gmail_access", "Gmail did not return a thread for a selected message")
-            if thread_id not in threads:
-                threads.append(thread_id)
-        target_resolved = {"thread_ids": threads, "message_ids": message_ids, "broad": False}
-    else:
-        threads = []
-        target_resolved = {"mailbox": True, "broad": not filters}
+    if form != "mailbox":
+        target = {form: W.string_list(target[form], form)}
 
     clean = {}
     clean["change_types"] = W._clean_change_types(
@@ -161,6 +138,38 @@ def prepare_start(client, account, args, config):
             raise W.WatchError("invalid_arguments", "include_sent must be a boolean")
         clean["include_sent"] = filters["include_sent"]
     clean.setdefault("include_sent", False)
+
+    return target, clean
+
+
+def prepare_start(client, account, args, config):
+    started_at = time.time()
+    target, clean = validate_selectors(args)
+    form = next(iter(target))
+    if form == "thread_ids":
+        threads = target["thread_ids"]
+        for thread_id in threads:
+            checked = _call(client, account, ["gmail", "users", "threads", "get"],
+                            {"userId": "me", "id": thread_id, "format": "metadata",
+                             "fields": "id"})
+            if not checked.get("ok"):
+                raise W.WatchError("target_not_found",
+                                   "A selected Gmail thread does not exist or is not accessible")
+        target_resolved = {"thread_ids": threads, "broad": False}
+    elif form == "message_ids":
+        message_ids = target["message_ids"]
+        threads = []
+        for message_id in message_ids:
+            meta = _message_meta(client, account, message_id)
+            thread_id = meta.get("threadId")
+            if not isinstance(thread_id, str) or not thread_id:
+                raise W.WatchError("gmail_access", "Gmail did not return a thread for a selected message")
+            if thread_id not in threads:
+                threads.append(thread_id)
+        target_resolved = {"thread_ids": threads, "message_ids": message_ids, "broad": False}
+    else:
+        threads = []
+        target_resolved = {"mailbox": True, "broad": not args.get("filters")}
 
     if "has_attachment" in clean:
         scopes = getattr(client, "scopes", None)

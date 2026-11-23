@@ -15,7 +15,7 @@ Prefer the curated tools for common jobs; use `gws_schema` to discover native re
 - Advanced: `gws_api(account,args)` takes exact CLI tokens, not a shell command.
 - Accounts: `gws_accounts` lists provisioned slots; `check_health=true` requests sanitized native status. `check_lifecycle=true` requires one account and no health request; it reports credential use for companion coordination, not permission to remove credentials. A slot name is not Google identity proof.
 
-Watches are not agent tools in the v0.10.0 candidate. Users send [`/gws-watch` commands](watch-setup.md#send-a-watch-command) in the originating messaging chat.
+`gws_watch_prepare` stages a validated local watch-start draft and returns a readable summary plus `/gws-watch confirmar CODE`. It performs no Google I/O, creates no subscription and grants no delivery authority. The user confirms in the same physical conversation; the command obtains trusted sender/session context and runs the existing route checks and start lifecycle. Direct watch activation, status and stop remain [`/gws-watch` commands](watch-setup.md#send-a-watch-command), not agent tools. Expired or consumed codes require a fresh draft.
 
 Schemas reject unknown fields, invalid types, malformed mail headers, and out-of-range requests. Searches return one bounded page; pass the returned page token to continue. IDs are never repaired or guessed.
 

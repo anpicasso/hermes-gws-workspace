@@ -101,24 +101,20 @@ def _list_initial(client, account, calendar_id, *, page_limit=20):
     raise W.WatchError("calendar_access", "Calendar baseline exceeded the bounded page limit")
 
 
-def prepare_start(client, account, args, config):
-    started_at = time.time()
+def validate_selectors(args):
     target = args.get("target")
-    filters = args.get("filters") or {}
+    filters = args.get("filters", {})
     if not isinstance(target, dict) or set(target) - TARGET_KEYS:
         raise W.WatchError("invalid_arguments",
                            "calendar target accepts calendar_ids, optional event_ids or recurring_event_ids")
     if "calendar_ids" not in target:
         raise W.WatchError("invalid_arguments", "calendar_ids is required")
-    calendar_ids = W.string_list(target["calendar_ids"], "calendar_ids", maximum=20)
+    target = {k: W.string_list(v, k, maximum=20 if k == "calendar_ids" else W.MAX_IDS)
+              for k, v in target.items()}
     if "event_ids" in target and "recurring_event_ids" in target:
         raise W.WatchError("invalid_arguments", "event_ids and recurring_event_ids are alternatives")
     if not isinstance(filters, dict) or set(filters) - FILTER_KEYS:
         raise W.WatchError("invalid_arguments", "unknown calendar filter field")
-    if not config.get("watch_callback_url"):
-        raise W.WatchError(
-            "calendar_callback_missing",
-            "Set watch_callback_url to the public HTTPS base that reaches the worker before starting a Calendar watch")
 
     clean = {}
     if "organizer_addresses" in filters:
@@ -155,8 +151,24 @@ def prepare_start(client, account, args, config):
         raise W.WatchError("invalid_arguments",
                            "changed_fields=attendee_responses requires attendee_addresses")
 
+    if "recurring_event_ids" in target and clean.get("date_window"):
+        raise W.WatchError(
+            "unsupported_combination",
+            "recurring_event_ids with date_window is not supported in this version; use a bounded "
+            "event_ids watch or omit date_window")
+    return target, clean
+
+
+def prepare_start(client, account, args, config):
+    started_at = time.time()
+    target, clean = validate_selectors(args)
+    if not config.get("watch_callback_url"):
+        raise W.WatchError(
+            "calendar_callback_missing",
+            "Set watch_callback_url to the public HTTPS base that reaches the worker before starting a Calendar watch")
+
     concrete, timezones = [], {}
-    for calendar_id in calendar_ids:
+    for calendar_id in target["calendar_ids"]:
         resolved, timezone = _calendar_get(client, account, calendar_id)
         if resolved not in concrete:
             concrete.append(resolved)
@@ -166,8 +178,7 @@ def prepare_start(client, account, args, config):
     series = []
     master_selected = False
     if "event_ids" in target:
-        event_ids = W.string_list(target["event_ids"], "event_ids")
-        for event_id in event_ids:
+        for event_id in target["event_ids"]:
             found = [(calendar_id, _event_get(client, account, calendar_id, event_id))
                      for calendar_id in concrete]
             existing = [(calendar_id, data) for calendar_id, data in found if data is not None]
@@ -188,13 +199,7 @@ def prepare_start(client, account, args, config):
             "event_ids selecting a recurring series master with date_window is not supported in this "
             "version; use recurring_event_ids without date_window or select a single occurrence")
     if "recurring_event_ids" in target:
-        series_ids = W.string_list(target["recurring_event_ids"], "recurring_event_ids")
-        if clean.get("date_window"):
-            raise W.WatchError(
-                "unsupported_combination",
-                "recurring_event_ids with date_window is not supported in this version; use a bounded "
-                "event_ids watch or omit date_window")
-        for series_id in series_ids:
+        for series_id in target["recurring_event_ids"]:
             found = [(calendar_id, _event_get(client, account, calendar_id, series_id))
                      for calendar_id in concrete]
             existing = [(calendar_id, data) for calendar_id, data in found

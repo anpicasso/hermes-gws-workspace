@@ -2,7 +2,7 @@
 
 ## Command origin
 
-`/gws-watch` takes a service name and a JSON request, not an origin. For every
+`/gws-watch` takes `confirmar CODE` (or `confirm CODE`) for a prepared draft, or a service name and an advanced JSON request, never an origin. For every
 start, status or stop, the gateway supplies `source` (platform, `user_id`, chat
 and optional thread), physical `session_id` and `session_key` as command kwargs.
 The plugin uses `ctx.profile_name` and checks the active home against its registered
@@ -11,7 +11,9 @@ home. The principal is the command sender, not the configured route owner.
 The command rejects missing sender, chat, physical session or route key, as well
 as bot-authored commands and local/CLI, cron or webhook origins. In a new messaging chat, send a normal
 message first; slash commands do not create a session. No binding cache, private
-ContextVar reader, process-global routing fallback or agent watch tool is used.
+ContextVar reader, process-global routing fallback or agent activation tool is used.
+
+`gws_watch_prepare` saves only a local start specification, scoped by host-injected physical session ID and registered profile/home. That ID is a draft lookup constraint, not proof of sender identity or authority. Confirmation obtains the real command origin and must pass the same exact principal/route checks as raw start. Knowing a code does not replace those checks. Use trusted conversations: this is not per-participant draft ownership within a shared physical session.
 
 ## Route manager
 

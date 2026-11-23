@@ -42,7 +42,7 @@ class RegistrationTests(unittest.TestCase):
 
     def test_public_only_tools_and_no_credential_creation(self):
         from gws_public_test.workspace_tools import SCHEMAS
-        self.assertEqual(set(self.tools), {"gws_accounts", "gws_api"} | set(SCHEMAS))
+        self.assertEqual(set(self.tools), {"gws_accounts", "gws_api", "gws_watch_prepare"} | set(SCHEMAS))
         self.assertNotIn("gws_public_test.oauth", sys.modules)
         self.assertEqual(set(self.commands), {"gws-watch", "gws_watch"})
         self.assertIs(self.commands["gws_watch"], self.commands["gws-watch"])

@@ -109,9 +109,11 @@ Subscription failures use durable backoff (initial retry 10 seconds, cap 900). `
 
 ## Send a watch command
 
-Send `/gws-watch` or `/gws-watch help` in your messaging chat for usage. In a new chat, send a normal message first: commands do not create physical sessions. The gateway also accepts `/gws_watch`. It passes the service name and one JSON object directly to the handler, with no model interpretation. The agent can draft the command but cannot submit it on your behalf.
+Ask the agent in normal conversation to prepare the changes you want to follow. It can look up resource IDs using the normal read tools, then call `gws_watch_prepare` to save a local draft. Review its summary and send the returned `/gws-watch confirmar CODE` yourself in that same conversation. `confirm` is also accepted. Preparation performs no Google I/O and grants no authority; confirmation uses the gateway sender/session and the existing route checks. Codes expire after 10 minutes, are single-use and are scoped to the physical session and profile. At most 64 pending drafts are stored per profile; summaries above 1,600 serialized characters are rejected rather than truncated. Unauthorized confirmation does not consume a draft. Authorized confirmation consumes it before Google I/O, so a failed start needs a new draft.
 
-Examples (substitute your account and exact IDs; send one line at a time):
+Send `/gws-watch` or `/gws-watch help` for usage. In a new chat, send a normal message first: commands do not create physical sessions. The gateway also accepts `/gws_watch`. The slash handler itself does not interpret natural language or run an agent loop; the normal conversation prepares the draft beforehand.
+
+Advanced raw JSON remains supported. Examples (substitute your account and exact IDs; send one line at a time):
 
 ```text
 /gws-watch gmail {"action":"start","account":"person@example.com","target":{"thread_ids":["THREAD_ID"]},"filters":{"from_addresses":["alice@example.com"]},"delivery_mode":"new_session","minutes":120,"stop_after_match":true}

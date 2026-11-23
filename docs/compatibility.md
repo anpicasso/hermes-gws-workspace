@@ -10,7 +10,7 @@ The repository tests/CI pin unchanged Hermes commit `0f602c5f6f18615632535251d62
 
 ## Required host surfaces
 
-- Public tool/hook registration and `ctx.register_command` for `/gws-watch`. The gateway must supply the command's messaging `source` (sender and chat), physical `session_id` and `session_key`; the plugin must be running in its registered profile/home. Missing context refuses watch operations, without a private origin API or environment fallback.
+- Public tool/hook registration and `ctx.register_command` for `/gws-watch`. The gateway must supply the command's messaging `source` (sender and chat), physical `session_id` and `session_key`; the plugin must be running in its registered profile/home. Missing context refuses watch operations, without a private origin API or environment fallback. The local-only draft tool uses the host-injected physical `session_id` to scope preparation, not as an authorization credential; the confirmation command still validates the real sender and route.
 - `pre_tool_call` approval directives and the actual host approval dispatcher.
 - Native generic-HMAC webhook ingress provisioned by the operator.
 - For same-session delivery: `pre_gateway_dispatch` with a usable session store and public `ctx.inject_message(session_key=...)`, plus explicit `allow_gateway_injection` consent.

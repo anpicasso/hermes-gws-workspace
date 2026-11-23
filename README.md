@@ -47,13 +47,14 @@ The optional [hermes-gws-remote-auth](https://github.com/anpicasso/hermes-gws-re
 
 Load the bundled operational skill with `skill_view("gws-workspace:workspace")` for accounts, watch commands and public HTTPS ingress options.
 
-The candidate registers **15 Workspace tools**, two hooks (`pre_tool_call`, `pre_gateway_dispatch`) and the `/gws-watch` command:
+The candidate registers **16 tools**, two hooks (`pre_tool_call`, `pre_gateway_dispatch`) and the `/gws-watch` command:
 
 - Accounts: `gws_accounts` (list or sanitized native health).
 - Gmail: `gws_gmail_search`, `gws_gmail_read`, `gws_gmail_draft`, `gws_gmail_send`.
 - Drive: `gws_drive_search`, `gws_drive_read`, `gws_drive_upload`, `gws_drive_share`.
 - Calendar: `gws_calendar_list`, `gws_calendar_freebusy`, `gws_calendar_create`, `gws_calendar_update`.
 - Discovery/advanced: `gws_schema`, `gws_api`.
+- Watch preparation: `gws_watch_prepare` stages a local draft; it does not activate a watch.
 
 Every Workspace operation selects an explicit account. Known reads run directly; mutations, sends/shares, local file input/output and unknown methods/options request the native Hermes approval gate. The configured host approval mode still applies. A model-supplied `approved` field cannot grant permission.
 
@@ -75,15 +76,15 @@ Drive changes.watch → HTTPS callback                 ├→ durable hints/curs
 Calendar events.watch → HTTPS callback               ┘  → local filters → outbox → Hermes
 ```
 
-Send `/gws-watch <gmail|drive|calendar> <JSON object>` in the messaging chat where you want notifications. In a new chat, send a normal message first so Hermes creates a physical session. The agent can draft the command, but you must send it yourself. The WhatsApp bridge supports only non-shared DMs; groups and unknown chat types are refused. `/gws-watch` or `/gws-watch help` shows usage; the gateway also accepts `/gws_watch`.
+Tell the agent what changes you want to follow. It prepares a local draft with `gws_watch_prepare`, explains the selected account, targets and delivery mode, and gives you `/gws-watch confirmar CODE`. Send that short command yourself in the same conversation to activate it. Preparation does not contact Google or start a watch. Codes expire, are single-use and cannot be confirmed from another physical session. In a new chat, send a normal message first so Hermes creates a physical session. The WhatsApp bridge supports only non-shared DMs; groups and unknown chat types are refused. `/gws-watch` or `/gws-watch help` shows usage; the gateway also accepts `/gws_watch`.
 
 ```text
-/gws-watch gmail {"action":"start","account":"person@example.com","target":{"mailbox":true},"filters":{"from_addresses":["alice@example.com"]},"delivery_mode":"same_session","minutes":30}
+/gws-watch confirmar CODE
 /gws-watch gmail {"action":"status"}
 /gws-watch gmail {"action":"stop","watch_id":"WATCH_ID"}
 ```
 
-Replace the account and sender before starting; use the returned watch ID to stop. `same_session` sends matches to this conversation; `new_session` runs the configured webhook separately. The command uses the gateway's sender and session, not destination IDs in the JSON. Local/CLI, cron, webhook and senderless requests cannot manage conversational watches.
+Use the exact code returned by preparation, not the placeholder above; use the returned watch ID to stop. `confirm` is an alias for `confirmar`. The advanced `/gws-watch <gmail|drive|calendar> <JSON object>` format remains supported. `same_session` sends matches to this conversation; `new_session` runs the configured webhook separately. The command uses the gateway's sender and session, not destination IDs in the JSON. Local/CLI, cron, webhook and senderless requests cannot manage conversational watches.
 
 The operator provisions delivery routes and public HTTPS ingress; one separately supervised worker per profile owns renewal, reconciliation and cleanup. Gmail push uses verified Google OIDC identity, exact audience/subscription/mailbox checks and durable acceptance before acknowledgement. Google API reads and renewals remain short account-locked native CLI calls. We do not run a persistent native watch alongside calls sharing its credential cache.
 

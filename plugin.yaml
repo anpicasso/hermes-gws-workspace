@@ -25,6 +25,7 @@ provides_tools:
   - gws_calendar_create
   - gws_calendar_update
   - gws_schema
+  - gws_watch_prepare
 provides_hooks:
   - pre_gateway_dispatch
   - pre_tool_call

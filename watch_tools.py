@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 
 if __package__:
     from . import watch as W
     from . import watch_calendar, watch_drive, watch_gmail, watch_routes
-    from .account_lifecycle import lifecycle_guard
+    from .account_lifecycle import _ACCOUNT, lifecycle_guard
 else:  # Direct module use by the standalone test suite.
     import watch as W  # type: ignore
     import watch_calendar, watch_drive, watch_gmail, watch_routes  # type: ignore
-    from account_lifecycle import lifecycle_guard
+    from account_lifecycle import _ACCOUNT, lifecycle_guard
 
 SERVICES = {
     "gmail": watch_gmail,
@@ -29,12 +30,26 @@ _START_FIELDS = {
 }
 
 
-COMMAND_HELP = '''Usage: /gws-watch <gmail|drive|calendar> <JSON>
+def prepare_schema():
+    by_service = {k: v.tool_schema()["parameters"]["properties"] for k, v in SERVICES.items()}
+    props = {k: v for k, v in by_service["drive"].items() if k not in ("action", "watch_id")}
+    props["service"] = {"type": "string", "enum": list(SERVICES)}
+    for key in ("target", "filters"):
+        props[key] = {"type": "object", "description": f"Use only {key} for the selected service.",
+                      "anyOf": [dict(fields[key], title=service) for service, fields in by_service.items()]}
+    return {"name": "gws_watch_prepare", "description": (
+        "Prepare a local watch draft, not an active watch. No Google lookup or subscription. "
+        "Show the user the full summary and confirmation command to send in this same chat; never send it yourself."),
+        "parameters": {"type": "object", "properties": props, "additionalProperties": False,
+                       "required": ["service", "account", "delivery_mode", "target"]}}
+
+
+COMMAND_HELP = '''Usage: /gws-watch confirmar CODE (or confirm CODE), or /gws-watch <gmail|drive|calendar> <JSON>
 Start: /gws-watch gmail {"action":"start","account":"person@example.com","target":{"mailbox":true},"delivery_mode":"same_session","minutes":30}
 Status: /gws-watch gmail {"action":"status"} (use returned next_offset as offset for the next page, or watch_id for selectors)
 Stop: /gws-watch gmail {"action":"stop","watch_id":"EXACT_ID"}
 /gws_watch is also accepted by the messaging gateway. Send a normal message first in a new chat.
-Use exact service selectors; this command does not interpret natural language. Ask the agent to draft the JSON, then send it yourself. Worker, account and operator delivery-route setup are required.'''
+Use exact service selectors; this command does not interpret natural language. Ask the agent to prepare a draft, review its summary, then send the confirmation yourself. Worker, account and operator delivery-route setup are required.'''
 
 
 def _unique_fields(pairs):
@@ -52,6 +67,10 @@ def parse_command(raw):
     if raw.strip() in ("", "help", "-h", "--help"):
         return None
     parts = raw.split(None, 1)
+    if parts[0] in ("confirmar", "confirm"):
+        if len(parts) != 2 or not re.fullmatch(r"[A-Za-z0-9_-]{22}", parts[1].strip()):
+            raise W.WatchError("invalid_arguments", "Use /gws-watch confirmar CODE, without other arguments")
+        return "confirm", parts[1].strip()
     if len(parts) != 2 or parts[0] not in SERVICES:
         raise W.WatchError("invalid_arguments", "Use /gws-watch <gmail|drive|calendar> <JSON>; /gws-watch help shows examples")
     try:
@@ -114,6 +133,55 @@ def _owned(store, watch_id, service, origin):
     return watch
 
 
+def prepare(args, store, profile, session_id):
+    # A physical session scopes scratch data, never authority to start or a delivery address.
+    if not session_id:
+        raise W.WatchError("no_trusted_session", "Prepare the draft in the conversation where you will confirm it")
+    W.clean_text(session_id, "physical session", maximum=1024)
+    service = args.get("service")
+    if service not in W.SERVICES or set(args) - {"service"} - (_START_FIELDS[service] - {"action"}):
+        raise W.WatchError("invalid_arguments", "Supply a service and only its watch start fields, without action or origin")
+    if any(v is None for v in args.values()):
+        raise W.WatchError("invalid_arguments", "Omit unused fields instead of supplying null")
+    common = W.validate_common(args)
+    if not _ACCOUNT.fullmatch(common["account"]):
+        raise W.WatchError("invalid_arguments", "Use an exact registered account slot name")
+    target, filters = SERVICES[service].validate_selectors(args)
+    common["delivery_mode"] = common.pop("mode")
+    if not common["skills"]:
+        del common["skills"]
+    summary = {"service": service, **common, "target": target, "filters": filters}
+    if "shared_drive_id" in args:
+        summary["shared_drive_id"] = args["shared_drive_id"]
+    # Never hide a selector or instruction behind a truncated approval preview.
+    if len(json.dumps(summary)) > 1600:
+        raise W.WatchError("draft_too_large", "Draft too long to review in full; narrow it or send a raw JSON start command")
+    # Preserve explicit vs implicit Gmail filters (used to mark a broad mailbox watch).
+    spec = {**summary, "filters": {k: filters[k] for k in args.get("filters", {})}}
+    code, expires = store.stage_draft(profile, session_id, json.dumps(spec))
+    return {"ok": True, "action": "prepared", "summary": summary, "expires_at": W.now_iso(expires),
+            "command": "/gws-watch confirmar " + code}
+
+
+def _consume_draft(code, runtime, origin):
+    store, routes = runtime.store, runtime.routes  # RouteManager initializes its own SQLite table.
+    unavailable = W.WatchError("draft_unavailable", "No confirmable draft here; check the session and operator route or prepare again")
+    with store.tx() as conn:
+        row = conn.execute("SELECT spec FROM watch_drafts WHERE code=? AND profile=? AND session_id=? AND expires_at>?",
+                           (code, origin["profile"], origin["session_id"], store.clock())).fetchone()
+        if not row:
+            raise unavailable
+        spec = json.loads(row[0])
+        # The configured command principal, not whoever knows the code, may consume it.
+        try:
+            routes.preflight(origin, spec["delivery_mode"], spec.get("skills", []))
+        except watch_routes.RouteError:
+            raise unavailable from None
+        if not conn.execute("DELETE FROM watch_drafts WHERE code=? AND expires_at>?", (code, store.clock())).rowcount:
+            raise unavailable
+    return spec.pop("service"), {**spec, "action": "start"}
+
+
 def handle(service, args, runtime, *, origin):
     """Fence watch creation against companion logout/reauthorization.
 
@@ -121,6 +189,8 @@ def handle(service, args, runtime, *, origin):
     Status and stop do not acquire this barrier, so cleanup can still progress.
     """
     try:
+        if service == "confirm":
+            service, args = _consume_draft(args, runtime, origin)
         if isinstance(args, dict) and args.get("action") == "start":
             common = W.validate_common(args)
             runtime.routes.preflight(origin, common["mode"], common["skills"])
@@ -167,7 +237,10 @@ def _handle(service, args, runtime, *, origin):
                     **common, "target": prepared["target"], "filters": prepared["filters"],
                 }),
             }
-            existing = store.find_active(spec["fingerprint"])
+            # Legacy all_files fingerprints omit the shared drive. Match its durable feed too.
+            source = prepared["sources"][0]
+            existing = store.find_active(spec["fingerprint"], source_id=store.source_key(
+                service, spec["account"], source["resource"], source["query"]))
             if existing is not None:
                 return {"ok": True, "action": "start", "already_active": True,
                         "watch": W.watch_status(store, existing)}

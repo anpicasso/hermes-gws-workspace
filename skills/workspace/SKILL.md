@@ -24,15 +24,15 @@ These are terminal commands. The optional companion tools `gws_login`/`gws_logou
 
 ## Watch commands
 
-Draft the exact `/gws-watch <gmail|drive|calendar> <JSON object>` for the user to send in the intended messaging chat. Do not run it yourself or substitute a tool, shell command or webhook. In a brand-new chat, have the user send a normal message first. The gateway supplies the sender and session; never include origin or destination fields. `/gws-watch help` shows usage; `/gws_watch` is the gateway alias.
+Use `gws_watch_prepare` to stage the requested start specification locally. First resolve actual resource IDs with the normal read tools when needed. Explain the account, selected changes, duration and delivery mode, then give the exact returned `/gws-watch confirmar CODE` for the user to send in this conversation. Do not invent a code, activate the watch yourself, or substitute a shell command or webhook. Preparation is not authorization and does not contact Google. Codes expire and are single-use; another physical session cannot confirm them. In a brand-new chat, have the user send a normal message first. The gateway supplies the sender and session; never include origin or destination fields. `/gws-watch help` shows usage; `/gws_watch` is the gateway alias.
 
 ```text
-/gws-watch gmail {"action":"start","account":"person@example.com","target":{"thread_ids":["THREAD_ID"]},"delivery_mode":"same_session","minutes":30}
+/gws-watch confirmar CODE
 /gws-watch gmail {"action":"status"}
 /gws-watch gmail {"action":"stop","watch_id":"WATCH_ID"}
 ```
 
-Use the user's account, actual IDs and narrowest requested selectors. Use `same_session` for the current conversation or `new_session` for a separate native webhook run. On the WhatsApp bridge use only a non-shared DM, not a group. Status lists ten watches per page; pass `next_offset` back as `offset`, or use `watch_id` for selector details. A draft is not an active watch: use the ID from the command result for status or stop.
+The code above is a placeholder, not a valid confirmation. Keep raw `/gws-watch <gmail|drive|calendar> <JSON object>` as an advanced alternative, not the default user experience. Use the user's account, actual IDs and narrowest requested selectors. Use `same_session` for the current conversation or `new_session` for a separate native webhook run. On the WhatsApp bridge use only a non-shared DM, not a group. Status lists ten watches per page; pass `next_offset` back as `offset`, or use `watch_id` for selector details. A draft is not an active watch: use the ID from the command result for status or stop.
 
 The separately supervised worker, Google ingress and exact operator-provisioned
 Hermes delivery route must already be configured. Use status to inspect errors and cleanup; stop

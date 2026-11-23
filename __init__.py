@@ -170,6 +170,12 @@ def register(ctx):
                     "account": {"type": "string"},
                     "args": {"type": "array", "items": {"type": "string"}}}, "required": ["account", "args"]}})
 
+    def prepare(args, **kwargs):
+        return watch_tools.prepare(args, runtime.store, profile, kwargs.get("session_id"))
+
+    ctx.register_tool(name="gws_watch_prepare", toolset="gws_workspace", handler=safe(prepare),
+                      schema=watch_tools.prepare_schema())
+
     async def watch_command(raw_args, **kwargs):
         try:
             root()
@@ -189,7 +195,7 @@ def register(ctx):
     for name in ("gws-watch", "gws_watch"):
         ctx.register_command(name, watch_command,
                              description="Start, inspect or stop a Workspace watch for this conversation",
-                             args_hint='<gmail|drive|calendar> <JSON>')
+                             args_hint='confirmar CODE | <gmail|drive|calendar> <JSON>')
 
     ctx.register_hook("pre_gateway_dispatch", watch_tools.bridge_callback(runtime.store, ctx, runtime.routes, profile=profile))
 

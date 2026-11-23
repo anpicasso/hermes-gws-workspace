@@ -2,7 +2,7 @@
 
 ## Public adapter boundary
 
-In the unreleased v0.10.0 candidate, `__init__.py` registers 15 Workspace tools, `/gws-watch`, and the existing approval and gateway dispatch hooks. No agent watch or login/logout tools are registered. The optional `hermes-gws-remote-auth` companion is installed separately.
+In the unreleased v0.10.0 candidate, `__init__.py` registers 15 Workspace tools and the local `gws_watch_prepare` draft tool, `/gws-watch`, and the existing approval and gateway dispatch hooks. No agent watch activation or login/logout tools are registered. The optional `hermes-gws-remote-auth` companion is installed separately.
 
 `router.py` selects `$HERMES_HOME/gws-oauth/accounts/<account>/` through `GOOGLE_WORKSPACE_CLI_CONFIG_DIR`, sets the file keyring backend and invokes `[gws_bin, *args]` without a shell. Account paths/files reject unsafe links. A filtered subprocess environment, isolated native HOME and empty dotenv sentinel prevent accidental adoption of inherited tokens, global ADC or ancestor dotenv credentials. Python inspects account-file metadata; native `gws` owns credential contents, decryption and refresh.
 
@@ -17,7 +17,7 @@ Curated builders and the generic executor share `api_policy.py` and Hermes' appr
 ## Watches and routing
 
 - `watch.py` owns strict validation, shared sources/cursors, fingerprints, watch lifecycle, hints and durable outbox. State lives at `$HERMES_HOME/plugin-data/gws-oauth/watch.sqlite3` with a private parent directory.
-- `/gws-watch` parses a service name and JSON object, then reuses `watch_tools.handle` for start/status/stop. `session_origin.py` derives the sender and conversation from host command kwargs, scoped to the registered profile/home. There is no tool shortcut, private origin import, ContextVar reader or binding cache.
+- `gws_watch_prepare` validates and stores an immutable local start draft without Google I/O. `/gws-watch confirmar CODE` resolves that expiring, single-use draft in the same physical session/profile, then reuses `watch_tools.handle` for activation. Raw service-plus-JSON start/status/stop remains supported. `session_origin.py` derives the sender and conversation from host command kwargs, scoped to the registered profile/home. There is no tool shortcut, private origin import, ContextVar reader or binding cache.
 - `watch_gmail.py` reads Gmail history, filters explicit change types locally and handles deletion tombstones without inventing missing metadata. History expiry resynchronizes the cursor and records an unrecoverable gap.
 - `watch_pubsub.py` accepts authenticated HTTPS PUSH envelopes. Official `google.oauth2.id_token.verify_oauth2_token` verifies the Google token; additional checks require the exact audience, verified service-account email, subscription and watched mailbox. The hint is durable before HTTP 204. No OAuth export, Python refresh, Pub/Sub pull or ADC is involved.
 - `watch_drive.py` classifies bounded before/after metadata, including direct-folder membership. `watch_calendar.py` tracks sync tokens and bounded event metadata, not an unbounded recurrence expansion. See [selector limitations](watch-setup.md#selectors-and-change-types).

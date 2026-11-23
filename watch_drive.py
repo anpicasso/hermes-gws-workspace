@@ -91,10 +91,9 @@ def _start_token(client, account, drive_id):
     return token
 
 
-def prepare_start(client, account, args, config):
-    started_at = time.time()
+def validate_selectors(args):
     target = args.get("target")
-    filters = args.get("filters") or {}
+    filters = args.get("filters", {})
     if not isinstance(target, dict) or set(target) - TARGET_KEYS:
         raise W.WatchError("invalid_arguments", "drive target accepts file_ids, folder_id or all_files")
     forms = [key for key in TARGET_KEYS if key in target]
@@ -102,9 +101,8 @@ def prepare_start(client, account, args, config):
         raise W.WatchError("invalid_arguments", "drive target must be exactly one of file_ids, folder_id or all_files")
     if not isinstance(filters, dict) or set(filters) - FILTER_KEYS:
         raise W.WatchError("invalid_arguments", "unknown drive filter field")
-    drive_id = args.get("shared_drive_id")
-    if drive_id is not None:
-        drive_id = W.clean_id(drive_id, "shared_drive_id")
+    if args.get("shared_drive_id") is not None:
+        W.clean_id(args["shared_drive_id"], "shared_drive_id")
     clean = {}
     if "name_contains" in filters:
         clean["name_contains"] = W.string_list(
@@ -121,23 +119,35 @@ def prepare_start(client, account, args, config):
     if "change_types" in filters:
         clean["change_types"] = W._clean_change_types(filters["change_types"], CHANGE_TYPES)
 
+    form = forms[0]
+    if form == "all_files" and target[form] is not True:
+        raise W.WatchError("invalid_arguments", "all_files must be true when used")
+    if form == "folder_id":
+        W.clean_id(target[form], form)
+    if form == "file_ids":
+        target = {form: W.string_list(target[form], form)}
+    return target, clean
+
+
+def prepare_start(client, account, args, config):
+    started_at = time.time()
+    target, clean = validate_selectors(args)
+    drive_id = args.get("shared_drive_id")
     if not config.get("watch_callback_url"):
         raise W.WatchError(
             "drive_callback_missing",
             "Set watch_callback_url to the public HTTPS base that reaches the worker before starting a Drive watch")
 
-    form = forms[0]
+    form = next(iter(target))
     # The change token must predate the snapshot; changes racing the snapshot are
     # then replayed and reconciled instead of falling between baseline and token.
     cursor = _start_token(client, account, drive_id)
     baseline = {}
     if form == "all_files":
-        if target["all_files"] is not True:
-            raise W.WatchError("invalid_arguments", "all_files must be true when used")
         target_resolved = {"all_files": True, "broad": not clean}
         baseline = {"seen": {}, "not_before": started_at}
     elif form == "folder_id":
-        folder_id = W.clean_id(target["folder_id"], "folder_id")
+        folder_id = target["folder_id"]
         folder = _file_get(client, account, folder_id)
         if folder["mimeType"] != FOLDER_MIME:
             raise W.WatchError("not_a_folder", "folder_id must name a Drive folder (direct children only)")
@@ -148,7 +158,7 @@ def prepare_start(client, account, args, config):
         target_resolved = {"folder_id": folder_id, "direct_children_only": True,
                            "broad": False, "shared_drive_id": drive_id}
     else:
-        file_ids = W.string_list(target["file_ids"], "file_ids")
+        file_ids = target["file_ids"]
         files = {}
         for file_id in file_ids:
             meta = _file_get(client, account, file_id)

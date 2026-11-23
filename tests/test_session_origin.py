@@ -66,6 +66,7 @@ class GatewayDispatchTests(unittest.TestCase):
         from gateway.platforms.event import MessageEvent
         from gateway.session import SessionEntry, SessionSource
         from gateway.run import GatewayRunner
+        from model_tools import handle_function_call
         from hermes_cli.plugins import get_plugin_manager, get_plugin_command_handler
         from hermes_cli.plugins_context import PluginContext
         from hermes_cli.plugins_manifest import parse_manifest_file
@@ -103,17 +104,18 @@ class GatewayDispatchTests(unittest.TestCase):
         manager._load_plugin(manifest)
         self.addCleanup(manager.unload, manifest)
         handler = get_plugin_command_handler("gws-watch")
-        self.assertIsNotNone(handler)
+        assert handler is not None  # Loaded through the real plugin manager.
         self.assertIs(get_plugin_command_handler("gws_watch"), handler)
         client = FakeGoogle()
         client.add_calendar("person@example.com", primary=True)
-        self.enterContext(mock.patch.dict(handler.__globals__, {"_PluginClient": lambda *args: client}))
+        transport = mock.Mock(return_value=client)
+        self.enterContext(mock.patch.dict(handler.__globals__, {"_PluginClient": transport}))
         injected = []
         self.enterContext(mock.patch.object(PluginContext, "inject_message", side_effect=lambda content, *, session_key: injected.append((content, session_key)) or True))
         store = watch.WatchStore(home)
 
         async def dispatch(service, args, selected_source=source, selected_entry=entry):
-            text = '/gws_watch ' + service + ' ' + json.dumps(args)
+            text = '/gws_watch ' + service + ' ' + (args if isinstance(args, str) else json.dumps(args))
             event = MessageEvent(text=text, source=selected_source, user_id=selected_source.user_id)
             raw = await runner._hm_run_plugin_handler(handler, event, selected_source, selected_entry)
             return json.loads(raw)
@@ -136,7 +138,35 @@ class GatewayDispatchTests(unittest.TestCase):
                 for mode in ("same_session", "new_session"):
                     args = {"action": "start", "account": "person@example.com", "target": target,
                             "delivery_mode": mode, "minutes": 5}
-                    started = await dispatch(service, args)
+                    fields = {"service": service, **{k: v for k, v in args.items() if k != "action"}}
+                    with mock.patch.dict(os.environ, {"HERMES_SESSION_ID": "physical"}):
+                        self.assertEqual(json.loads(handle_function_call("gws_watch_prepare", fields))["error_code"],
+                                         "no_trusted_session")
+                    before = transport.call_count
+                    draft = json.loads(handle_function_call("gws_watch_prepare", fields, session_id=entry.session_id))
+                    self.assertTrue(draft.get("ok"), draft)
+                    self.assertEqual(draft["summary"]["target"], target)
+                    cmd, verb, code = draft["command"].split()
+                    self.assertEqual((cmd, verb), ("/gws-watch", "confirmar"))
+                    reset = SessionEntry(key, "reset", now, now)
+                    foreign = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="other", thread_id="thread")
+                    denied = await dispatch(verb, code, selected_entry=reset)
+                    self.assertEqual(denied["error_code"], "draft_unavailable")
+                    self.assertEqual(await dispatch(verb, code, foreign), denied)
+                    if not before:
+                        self.assertFalse(store.list_watches())
+                        self.assertFalse((home / "gws-oauth").exists())
+                        stale = json.loads(handle_function_call("gws_watch_prepare", fields, session_id=entry.session_id))
+                        stale_code = stale["command"].split()[-1]
+                        with store.tx() as conn:
+                            conn.execute("UPDATE watch_drafts SET expires_at=0 WHERE code=?", (stale_code,))
+                        self.assertEqual(await dispatch(verb, stale_code), denied)
+                    self.assertEqual(transport.call_count, before)  # No Google/auth/route setup while drafting or denied.
+                    results = await asyncio.gather(dispatch(verb, code), dispatch("confirm", code))
+                    self.assertCountEqual([r["ok"] for r in results], [True, False], results)
+                    started = next(r for r in results if r["ok"])
+                    self.assertIn(denied, results)
+                    self.assertEqual(await dispatch(verb, code), denied)
                     self.assertTrue(started.get("ok"), started)
                     wid = started["watch"]["watch_id"]
                     self.assertEqual(json.loads(store.get_watch(wid)["origin_json"]), origin)
