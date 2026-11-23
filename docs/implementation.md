@@ -2,7 +2,7 @@
 
 ## Public adapter boundary
 
-`gws-workspace` v0.9.1 is a native credential-owned adapter. `__init__.py` registers curated tools, `gws_api`, `gws_accounts`, three watch tools and public approval/dispatch hooks. It does not register login/logout tools or run a login manager. The optional `hermes-gws-remote-auth` companion is optional and separately installed; its login implementation is not the public execution path.
+In the unreleased v0.10.0 candidate, `__init__.py` registers 15 Workspace tools, `/gws-watch`, and the existing approval and gateway dispatch hooks. No agent watch or login/logout tools are registered. The optional `hermes-gws-remote-auth` companion is installed separately.
 
 `router.py` selects `$HERMES_HOME/gws-oauth/accounts/<account>/` through `GOOGLE_WORKSPACE_CLI_CONFIG_DIR`, sets the file keyring backend and invokes `[gws_bin, *args]` without a shell. Account paths/files reject unsafe links. A filtered subprocess environment, isolated native HOME and empty dotenv sentinel prevent accidental adoption of inherited tokens, global ADC or ancestor dotenv credentials. Python inspects account-file metadata; native `gws` owns credential contents, decryption and refresh.
 
@@ -17,7 +17,7 @@ Curated builders and the generic executor share `api_policy.py` and Hermes' appr
 ## Watches and routing
 
 - `watch.py` owns strict validation, shared sources/cursors, fingerprints, watch lifecycle, hints and durable outbox. State lives at `$HERMES_HOME/plugin-data/gws-oauth/watch.sqlite3` with a private parent directory.
-- `session_origin.py` snapshots bound runtime ContextVars on each watch call. It matches the host-dispatched physical session ID and profile, requires the current actor, and refuses delegated lineage even after a child rebinds its own ID. No binding cache, manual command or process-global routing fallback exists. The bound reader and delegation guard are internal-host compatibility exceptions; injection remains public.
+- `/gws-watch` parses a service name and JSON object, then reuses `watch_tools.handle` for start/status/stop. `session_origin.py` derives the sender and conversation from host command kwargs, scoped to the registered profile/home. There is no tool shortcut, private origin import, ContextVar reader or binding cache.
 - `watch_gmail.py` reads Gmail history, filters explicit change types locally and handles deletion tombstones without inventing missing metadata. History expiry resynchronizes the cursor and records an unrecoverable gap.
 - `watch_pubsub.py` accepts authenticated HTTPS PUSH envelopes. Official `google.oauth2.id_token.verify_oauth2_token` verifies the Google token; additional checks require the exact audience, verified service-account email, subscription and watched mailbox. The hint is durable before HTTP 204. No OAuth export, Python refresh, Pub/Sub pull or ADC is involved.
 - `watch_drive.py` classifies bounded before/after metadata, including direct-folder membership. `watch_calendar.py` tracks sync tokens and bounded event metadata, not an unbounded recurrence expansion. See [selector limitations](watch-setup.md#selectors-and-change-types).
@@ -34,7 +34,7 @@ One-shot matching reserves one outbox event transactionally. Shared-source curso
 
 `new_session` uses an existing native route with a fixed destination, skills and prompt. HTTP accepted/duplicate receipts prove admission only. The same-session bridge verifies authenticated native webhook source/profile, durable watch/generation/outbox and current physical session before claiming and calling public injection. False/exception after a claim becomes uncertain and is not blindly replayed.
 
-The host lacks an atomic expected-physical-session fence: `/new` between lookup and injection can target a replacement session. Origin capture requires the current bound actor; mixed/cleared actor turns refuse rather than falling back to the route owner. A profile still represents one trusted operator, and remote route configuration remains an operator attestation. These are residual limits, not race-free delivery, hostile-plugin isolation or exactly-once guarantees. The [route contract](routes-contract.md) is the detailed reference.
+The host lacks an atomic expected-physical-session fence: `/new` between lookup and injection can target a replacement session. The command requires an identified sender; a profile still represents one trusted operator, and remote route configuration remains an operator attestation. These are residual limits, not race-free delivery, hostile-plugin isolation or exactly-once guarantees. The [route contract](routes-contract.md) is the detailed reference.
 
 ## Verification
 

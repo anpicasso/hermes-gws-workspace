@@ -6,12 +6,12 @@ Multi-account Google Workspace access through the [native `gws` CLI](https://git
 
 ## Install and configure
 
-Requirements: Hermes with the plugin APIs and bound-context compatibility adapter described in [compatibility](docs/compatibility.md), native `gws` (tested baseline 0.22.5), and the Python dependencies declared in `plugin.yaml` (PyYAML, aiohttp and google-auth with requests). Watches require POSIX locking and a separately supervised worker. No binary, cloud provisioning or worker auto-start is included.
+Requirements: Hermes with the [plugin APIs listed here](docs/compatibility.md), native `gws` (tested baseline 0.22.5), and the Python dependencies declared in `plugin.yaml` (PyYAML, aiohttp and google-auth with requests). Watches require POSIX locking and a separately supervised worker. No binary, cloud provisioning or worker auto-start is included.
 
-Install the v0.9.1 release:
+This README describes the **unreleased v0.10.0 candidate**: watches use a slash command on unmodified Hermes. The published **v0.9.1** still uses agent watch tools; the install below gets that release, not the candidate.
 
 ```bash
-hermes plugins install anpicasso/hermes-google-workspace --ref v0.9.1 --enable
+hermes plugins install anpicasso/hermes-gws-workspace --ref v0.9.1 --enable
 hermes config set plugins.entries.gws-workspace.settings.gws_bin /absolute/path/to/gws
 ```
 
@@ -45,16 +45,15 @@ The optional [hermes-gws-remote-auth](https://github.com/anpicasso/hermes-gws-re
 
 ## Tools
 
-Load the bundled operational skill with `skill_view("gws-workspace:workspace")`; it covers accounts, agent-driven watches and public HTTPS ingress options.
+Load the bundled operational skill with `skill_view("gws-workspace:workspace")` for accounts, watch commands and public HTTPS ingress options.
 
-The public plugin registers **18 tools**:
+The candidate registers **15 Workspace tools**, two hooks (`pre_tool_call`, `pre_gateway_dispatch`) and the `/gws-watch` command:
 
 - Accounts: `gws_accounts` (list or sanitized native health).
 - Gmail: `gws_gmail_search`, `gws_gmail_read`, `gws_gmail_draft`, `gws_gmail_send`.
 - Drive: `gws_drive_search`, `gws_drive_read`, `gws_drive_upload`, `gws_drive_share`.
 - Calendar: `gws_calendar_list`, `gws_calendar_freebusy`, `gws_calendar_create`, `gws_calendar_update`.
 - Discovery/advanced: `gws_schema`, `gws_api`.
-- Notifications: `gws_gmail_watch`, `gws_drive_watch`, `gws_calendar_watch`.
 
 Every Workspace operation selects an explicit account. Known reads run directly; mutations, sends/shares, local file input/output and unknown methods/options request the native Hermes approval gate. The configured host approval mode still applies. A model-supplied `approved` field cannot grant permission.
 
@@ -76,7 +75,15 @@ Drive changes.watch → HTTPS callback                 ├→ durable hints/curs
 Calendar events.watch → HTTPS callback               ┘  → local filters → outbox → Hermes
 ```
 
-Each tool supports `start`, `status`, `stop`, a bounded lifetime, and `same_session` or `new_session` delivery. The agent starts watches directly: the plugin captures the current bound runtime session and actor automatically, with no manual bind command or model-selected destination. Missing context, mixed/cleared actors and delegated children fail closed. This small internal-host compatibility exception is documented in [the route contract](docs/routes-contract.md).
+Send `/gws-watch <gmail|drive|calendar> <JSON object>` in the messaging chat where you want notifications. In a new chat, send a normal message first so Hermes creates a physical session. The agent can draft the command, but you must send it yourself. The WhatsApp bridge supports only non-shared DMs; groups and unknown chat types are refused. `/gws-watch` or `/gws-watch help` shows usage; the gateway also accepts `/gws_watch`.
+
+```text
+/gws-watch gmail {"action":"start","account":"person@example.com","target":{"mailbox":true},"filters":{"from_addresses":["alice@example.com"]},"delivery_mode":"same_session","minutes":30}
+/gws-watch gmail {"action":"status"}
+/gws-watch gmail {"action":"stop","watch_id":"WATCH_ID"}
+```
+
+Replace the account and sender before starting; use the returned watch ID to stop. `same_session` sends matches to this conversation; `new_session` runs the configured webhook separately. The command uses the gateway's sender and session, not destination IDs in the JSON. Local/CLI, cron, webhook and senderless requests cannot manage conversational watches.
 
 The operator provisions delivery routes and public HTTPS ingress; one separately supervised worker per profile owns renewal, reconciliation and cleanup. Gmail push uses verified Google OIDC identity, exact audience/subscription/mailbox checks and durable acceptance before acknowledgement. Google API reads and renewals remain short account-locked native CLI calls. We do not run a persistent native watch alongside calls sharing its credential cache.
 
@@ -84,7 +91,7 @@ The operator provisions delivery routes and public HTTPS ingress; one separately
 
 ## Migration, security and removal
 
-The plugin ID is now `gws-workspace` (toolset `gws_workspace`); the repository URL and account storage paths are unchanged. Before upgrading from our `gws-oauth` or pre-catalog v0.9.0 `google-workspace` build, stop watches, finish cleanup, stop the worker and disable that old installation; duplicate tool names must not coexist. Preserve account directories and move this plugin's settings and injection consent to `plugins.entries.gws-workspace`, then update the worker path and restart it. Do not copy credentials into the installed plugin directory. Update any explicit toolset allowlist and use remote-auth 0.1.1 or newer if wanted.
+The plugin ID is `gws-workspace` (toolset `gws_workspace`); account storage paths are unchanged. Before upgrading from our `gws-oauth` or pre-catalog v0.9.0 `google-workspace` build, stop watches, finish cleanup, stop the worker and disable that old installation; duplicate tool names must not coexist. Preserve account directories and move this plugin's settings and injection consent to `plugins.entries.gws-workspace`, then update the worker path and restart it. Do not copy credentials into the installed plugin directory. Update any explicit toolset allowlist and use remote-auth 0.1.1 or newer if wanted.
 
 The existing Hermes catalog entry named `google-workspace` belongs to another maintainer: do not overwrite its settings or treat it as this plugin's previous installation.
 
@@ -105,4 +112,4 @@ hermes plugins doctor . --ci
 hermes plugins validate . --json
 ```
 
-Offline transport/host integration tests are not live Google OAuth or delivery evidence. See [compatibility](docs/compatibility.md), [implementation](docs/implementation.md), [OAuth setup](docs/oauth-setup.md), [login/logout](docs/login.md), and [watch operations](docs/watch-setup.md).
+User testing of the slash command with live Google delivery is pending. [Verification records](docs/verification.md) distinguish earlier release results from this candidate. [Catalog PR #157482](https://github.com/NousResearch/hermes-agent/pull/157482) remains a draft; the [proposed upstream API for agent tools](docs/catalog-policy.md#upstream-follow-up-trusted-origin-for-agent-tools) is separate.

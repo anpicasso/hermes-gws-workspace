@@ -1,24 +1,19 @@
 # Public route and origin contract
 
-## Parent integration API
+## Command origin
 
-`current_origin(session_id, profile)` snapshots the current tool call's bound
-runtime context. The wrapper supplies the host-dispatched physical `session_id`
-and the loaded plugin profile, never model arguments. It requires matching bound
-ID/profile, a non-empty current actor, route key, platform and chat. Optional thread,
-scope and parent-chat metadata is copied without message content or credentials.
+`/gws-watch` takes a service name and a JSON request, not an origin. For every
+start, status or stop, the gateway supplies `source` (platform, `user_id`, chat
+and optional thread), physical `session_id` and `session_key` as command kwargs.
+The plugin uses `ctx.profile_name` and checks the active home against its registered
+home. The principal is the command sender, not the configured route owner.
 
-No manual bind command, TTL map or process-global environment fallback exists.
-Each call gets a fresh snapshot, including after `/new` or plugin reload. Delegated
-children are refused before resolving origin, even if a child inherits its parent's
-route and rebinds its own physical ID. Webhook, scheduled and non-conversational
-surfaces are refused. Mixed/cleared actor turns never fall back to route ownership.
+The command rejects missing sender, chat, physical session or route key, as well
+as bot-authored commands and local/CLI, cron or webhook origins. In a new messaging chat, send a normal
+message first; slash commands do not create a session. No binding cache, private
+ContextVar reader, process-global routing fallback or agent watch tool is used.
 
-This deliberately uses internal `gateway.session_context._bound_session_value`
-and `agent.delegation_context.is_delegated_child_process_context`, because the
-public environment getter can borrow process-global routes and inherited child
-context. It is a narrow compatibility exception, not a public-API-only claim.
-Missing APIs/context fail closed. No Hermes core patch is required.
+## Route manager
 
 `RouteManager(ctx=None, *, home=None, store=None, config=None, profile="default")`
 uses the existing WatchStore transaction API. Pass the SAME profile-local store to
@@ -113,24 +108,14 @@ from plugin state. Provision a route separately for each exact native destinatio
 
 ## Host evidence and limits
 
-Inspected real host `/home/xithus/.hermes/hermes-agent`:
-
-- `gateway/session_context.py` supplies bound-only ContextVar reads and clears
-  actor identity when the active turn event becomes mixed/anonymous. The adapter
-  requires those bound values, not public `get_session_env`'s environment fallback.
-- `agent/delegation_context.py` supplies a context-local/process delegation guard.
-  Tests exercise the real `delegated_child_context`, including physical-ID rebinding.
-  An ID equality check alone does not prove that a parent route belongs to a child.
-- These internal contracts must be revalidated on host upgrades. Tests use real host
-  helpers with synthetic route values; they do not substitute for live delivery.
-- `gateway/platforms/webhook.py:791-825` builds native authenticated webhook
+- The gateway builds the native authenticated webhook
   source platform, `chat_name=webhook/NAME`, `user_id=webhook:NAME`, routed profile,
   and raw payload. The hook requires that exact source identity/profile plus the
   configured bridge and matching durable watch, origin, generation and outbox row.
   It trusts Hermes native ingress authentication; the hook is not another HTTP
   authentication layer. Forged source objects from another trusted plugin are
   outside the isolation boundary, as are malicious operators.
-- `hermes_cli/plugins_context.py:397-404` and public plugin docs expose injection
+- `ctx.inject_message` supports injection
   with session_key/origin, but NO expected_session_id. The bridge prechecks the
   physical session through hook-provided `session_store.lookup_by_session_key`,
   then transactionally claims outbox before injection. `/new` between lookup and
@@ -139,10 +124,8 @@ Inspected real host `/home/xithus/.hermes/hermes-agent`:
 
 Important limitations:
 
-1. Tool kwargs alone identify a physical session, not an actor. The adapter also
-   requires the current bound actor and refuses mixed/cleared actor turns. This
-   depends on host context propagation and is not isolation against a malicious
-   plugin or operator. Use trusted conversations or sender-isolated sessions.
+1. The plugin trusts the gateway's command metadata. It does not isolate accounts
+   from a malicious plugin or operator. Use trusted chats or sender-isolated sessions.
 2. Operator config is an attestation of the remote native route's destination,
    prompt, profile, skills and signature mode. There is no public readback API here
    to prove the receiver still matches it. Direct receiver edits without updating
@@ -155,8 +138,5 @@ Important limitations:
 4. Same-session true means scheduled/admitted. False or exception after claiming
    becomes uncertain and is not blindly replayed. Crash recovery retains the
    existing durable outbox uncertainty behavior. No exactly-once guarantee.
-5. Origin regression tests exercise real host ContextVars with synthetic routes,
-   delegated children, concurrent contexts and actor clearing. Route tests include
-   loopback HTTP redirect refusal. These do not prove live automatic-origin watch
-   delivery or fresh OAuth; see [verification](verification.md) for separately
-   measured end-to-end coverage.
+5. Historical end-to-end delivery tests predate the slash-command origin. See
+   [verification](verification.md) for measured coverage and pending live checks.

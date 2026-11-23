@@ -1,4 +1,5 @@
 """Profile-scoped Workspace tools. Native gws owns credentials and refresh."""
+import asyncio
 import json
 from pathlib import Path
 
@@ -46,8 +47,8 @@ def register(ctx):
     from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
     from .account_backend import AccountBackend
     from . import watch as W
-    from . import watch_calendar, watch_drive, watch_gmail, watch_routes, watch_tools
-    from .session_origin import current_origin
+    from . import watch_routes, watch_tools
+    from .session_origin import command_origin
     from .workspace_tools import SCHEMAS, build_args
     from .api_policy import make_pre_tool_call_hook
 
@@ -105,10 +106,6 @@ def register(ctx):
                     "watch_gmail_push_service_account")
             return {key: ctx.get_config(key, default=300 if key == "watch_reconcile_seconds" else "")
                     for key in keys}
-
-        def origin(self, session_id=None):
-            root()
-            return current_origin(session_id, profile, home=home)
 
     runtime = Runtime()
     ctx.register_skill("workspace", Path(__file__).parent / "skills/workspace/SKILL.md")
@@ -173,15 +170,26 @@ def register(ctx):
                     "account": {"type": "string"},
                     "args": {"type": "array", "items": {"type": "string"}}}, "required": ["account", "args"]}})
 
-    def watch_handler(service):
-        def handler(args, **kwargs):
-            return watch_tools.handle(service, args, runtime, session_id=kwargs.get("session_id"))
-        return safe(handler)
+    async def watch_command(raw_args, **kwargs):
+        try:
+            root()
+            parsed = watch_tools.parse_command(raw_args)
+            if parsed is None:
+                return watch_tools.COMMAND_HELP
+            service, args = parsed
+            origin = command_origin(kwargs.get("source"), kwargs.get("session_id"),
+                                    kwargs.get("session_key"), kwargs.get("platform"), profile)
+            # Snapshot before the thread hop; no ambient session or model-chosen destination.
+            result = await asyncio.to_thread(watch_tools.handle, service, args, runtime, origin=origin)
+            return watch_tools.command_reply(result)
+        except Exception as exc:
+            return watch_tools.command_reply(watch_tools._error(exc))
 
-    for service, module in (("gmail", watch_gmail), ("drive", watch_drive),
-                            ("calendar", watch_calendar)):
-        ctx.register_tool(name=module.TOOL_NAME, toolset="gws_workspace",
-                          handler=watch_handler(service), schema=module.tool_schema())
+    # The gateway checks access against the typed name before normalizing it.
+    for name in ("gws-watch", "gws_watch"):
+        ctx.register_command(name, watch_command,
+                             description="Start, inspect or stop a Workspace watch for this conversation",
+                             args_hint='<gmail|drive|calendar> <JSON>')
 
     ctx.register_hook("pre_gateway_dispatch", watch_tools.bridge_callback(runtime.store, ctx, runtime.routes, profile=profile))
 

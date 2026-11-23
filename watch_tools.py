@@ -1,4 +1,4 @@
-"""Strict agent-tool adapters for the three targeted Workspace watches."""
+"""Strict shared lifecycle and slash-command adapter for Workspace watches."""
 from __future__ import annotations
 
 import json
@@ -29,6 +29,68 @@ _START_FIELDS = {
 }
 
 
+COMMAND_HELP = '''Usage: /gws-watch <gmail|drive|calendar> <JSON>
+Start: /gws-watch gmail {"action":"start","account":"person@example.com","target":{"mailbox":true},"delivery_mode":"same_session","minutes":30}
+Status: /gws-watch gmail {"action":"status"} (use returned next_offset as offset for the next page, or watch_id for selectors)
+Stop: /gws-watch gmail {"action":"stop","watch_id":"EXACT_ID"}
+/gws_watch is also accepted by the messaging gateway. Send a normal message first in a new chat.
+Use exact service selectors; this command does not interpret natural language. Ask the agent to draft the JSON, then send it yourself. Worker, account and operator delivery-route setup are required.'''
+
+
+def _unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def parse_command(raw):
+    if not isinstance(raw, str) or len(raw) > 16000:
+        raise W.WatchError("invalid_arguments", "Command must be text of at most 16000 characters")
+    if raw.strip() in ("", "help", "-h", "--help"):
+        return None
+    parts = raw.split(None, 1)
+    if len(parts) != 2 or parts[0] not in SERVICES:
+        raise W.WatchError("invalid_arguments", "Use /gws-watch <gmail|drive|calendar> <JSON>; /gws-watch help shows examples")
+    try:
+        args = json.loads(parts[1], object_pairs_hook=_unique_fields)
+        if not isinstance(args, dict):
+            raise ValueError("Expected object")
+        json.dumps(args, allow_nan=False)
+    except (ValueError, RecursionError):
+        raise W.WatchError("invalid_arguments", "Supply one valid JSON object without duplicate fields or non-finite numbers") from None
+    return parts[0], args
+
+
+def command_reply(result):
+    """Render small selectors losslessly and mark larger values as previews."""
+    def compact(value):
+        return json.dumps(value, separators=(",", ":"))
+
+    if not result.get("ok"):
+        error = str(result.get("error", "Watch operation failed"))
+        if len(encoded := compact(error)) > 800:
+            error = encoded[1:401] + "... [truncated]"
+        return compact({"ok": False, "error_code": result.get("error_code"), "error": error})
+    reply = {key: result[key] for key in ("ok", "action", "already_active", "local_revoked", "remote_cleanup", "note",
+                                          "total", "has_more", "next_offset", "watches") if key in result}
+    if "watch" in result:
+        row = result["watch"]
+        detail = {k: row[k] for k in ("watch_id", "service", "state", "delivery_mode", "expires_at", "remote_cleanup")}
+        for key, budget in (("account", 260), ("delivery", 220), ("gap", 120), ("last_error", 160),
+                            ("target", 340), ("filters", 340)):
+            text = compact(row[key])
+            if len(text) <= budget:
+                detail[key] = row[key]
+            else:
+                # A preview is quoted again in the reply; escaped ASCII can double in size.
+                detail[key + "_preview"] = text[:budget // 2] + "..."
+        reply["watch"] = detail
+    return compact(reply)
+
+
 def _error(exc):
     if isinstance(exc, W.WatchError):
         return exc.as_dict()
@@ -52,7 +114,7 @@ def _owned(store, watch_id, service, origin):
     return watch
 
 
-def handle(service, args, runtime, *, session_id=None):
+def handle(service, args, runtime, *, origin):
     """Fence watch creation against companion logout/reauthorization.
 
     Lock order: lifecycle -> native execution locks -> short SQLite transaction.
@@ -60,18 +122,17 @@ def handle(service, args, runtime, *, session_id=None):
     """
     try:
         if isinstance(args, dict) and args.get("action") == "start":
-            account = args.get("account")
-            if not isinstance(account, str):
-                raise W.WatchError("invalid_arguments", "start requires an account")
-            with lifecycle_guard(runtime.store.home / "gws-oauth", W.validate_common(args)["account"]):
-                return _handle(service, args, runtime, session_id=session_id)
-        return _handle(service, args, runtime, session_id=session_id)
+            common = W.validate_common(args)
+            runtime.routes.preflight(origin, common["mode"], common["skills"])
+            with lifecycle_guard(runtime.store.home / "gws-oauth", common["account"]):
+                return _handle(service, args, runtime, origin=origin)
+        return _handle(service, args, runtime, origin=origin)
     except Exception as exc:
         return _error(exc)
 
 
-def _handle(service, args, runtime, *, session_id=None):
-    """Dispatch one tool call. ``runtime`` is built by the plugin registration."""
+def _handle(service, args, runtime, *, origin):
+    """Dispatch a command using its explicitly captured origin."""
     module = SERVICES[service]
     if not isinstance(args, dict):
         return {"ok": False, "error_code": "invalid_arguments", "error": "arguments must be an object"}
@@ -79,12 +140,13 @@ def _handle(service, args, runtime, *, session_id=None):
     if action not in ("start", "status", "stop"):
         return {"ok": False, "error_code": "invalid_arguments", "error": "action must be start, status or stop"}
     allowed = _START_FIELDS[service] if action == "start" else {"action", "watch_id"}
+    if action == "status" and "watch_id" not in args:
+        allowed = {"action", "offset"}
     unknown = set(args) - allowed
     if unknown:
         return {"ok": False, "error_code": "invalid_arguments",
                 "error": f"unknown or action-inappropriate fields: {', '.join(sorted(unknown))}"}
     try:
-        origin = runtime.origin(session_id) if session_id is not None else runtime.origin()
         store = runtime.store
         store.expire_due()
         if action == "start":
@@ -149,16 +211,22 @@ def _handle(service, args, runtime, *, session_id=None):
                     "remote_cleanup": "pending",
                     "note": "Stop removes the local watch binding; operator routes are preserved. Already admitted or sent output cannot be undone."}
         watch_id = args.get("watch_id")
-        if watch_id is not None:
+        if "watch_id" in args:
             if not isinstance(watch_id, str) or not watch_id:
                 raise W.WatchError("invalid_arguments", "watch_id must be an exact non-empty ID")
             watch = _owned(store, watch_id, service, origin)
             return {"ok": True, "action": "status", "watch": W.watch_status(store, watch)}
+        offset = args.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            raise W.WatchError("invalid_arguments", "offset must be a non-negative integer")
         rows = store.list_watches(service=service, profile=origin["profile"],
                                   principal=origin["principal"])
         rows = [row for row in rows if _same_route(row, origin)]
-        return {"ok": True, "action": "status", "total": len(rows), "has_more": len(rows) > 50,
-                "watches": [W.watch_status(store, row) for row in rows[:50]]}
+        end = offset + 10
+        return {"ok": True, "action": "status", "total": len(rows), "has_more": end < len(rows),
+                "next_offset": end if end < len(rows) else None,
+                "watches": [{"watch_id": row["watch_id"], "state": row["state"], "delivery_mode": row["mode"],
+                             "expires_at": W.now_iso(row["expires_at"])} for row in rows[offset:end]]}
     except Exception as exc:
         return _error(exc)
 

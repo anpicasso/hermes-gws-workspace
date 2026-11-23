@@ -1,5 +1,5 @@
 """Public plugin loads independently; account lifecycle and origins fail closed."""
-import contextvars
+import asyncio
 import importlib.util
 import json
 import sys
@@ -42,10 +42,10 @@ class RegistrationTests(unittest.TestCase):
 
     def test_public_only_tools_and_no_credential_creation(self):
         from gws_public_test.workspace_tools import SCHEMAS
-        self.assertEqual(set(self.tools), {"gws_accounts", "gws_api", "gws_gmail_watch",
-            "gws_drive_watch", "gws_calendar_watch"} | set(SCHEMAS))
+        self.assertEqual(set(self.tools), {"gws_accounts", "gws_api"} | set(SCHEMAS))
         self.assertNotIn("gws_public_test.oauth", sys.modules)
-        self.assertEqual(self.commands, {})
+        self.assertEqual(set(self.commands), {"gws-watch", "gws_watch"})
+        self.assertIs(self.commands["gws_watch"], self.commands["gws-watch"])
         self.assertEqual(set(self.cli_commands), {"gws"})
         self.assertEqual(set(self.skills), {"workspace"})
         self.assertTrue(self.skills["workspace"].is_file())
@@ -89,25 +89,37 @@ class RegistrationTests(unittest.TestCase):
         for name in self.tools:
             self.assertEqual(self.call(name, {})["error_code"], "profile_mismatch", name)
 
-    def test_watch_does_not_borrow_environment_origin(self):
+    def command(self, raw, **kwargs):
+        return asyncio.run(self.commands["gws-watch"](raw, **kwargs))
+
+    def test_watch_requires_explicit_command_context_not_environment(self):
         import os
         with patch.dict(os.environ, {"HERMES_SESSION_ID": "parent", "HERMES_SESSION_KEY": "route",
                                      "HERMES_SESSION_USER_ID": "user"}):
-            result = self.call("gws_gmail_watch", {"action": "status"}, session_id="child")
-        self.assertFalse(result["ok"])
+            result = json.loads(self.command('gmail {"action":"status"}', session_id="child"))
         self.assertEqual(result["error_code"], "no_trusted_origin")
+        for name in ("gws_gmail_watch", "gws_drive_watch", "gws_calendar_watch"):
+            self.assertNotIn(name, self.tools)
 
-    def test_bound_origin_uses_physical_id(self):
+    def test_command_origin_is_host_context_and_profile_checked(self):
+        source = SimpleNamespace(platform="discord", user_id="u", chat_id="c", thread_id="t")
+        kwargs = dict(source=source, platform="discord", session_id="physical", session_key="logical")
         from gws_public_test import watch_tools
-        from gateway.session_context import set_session_vars
-        context = contextvars.Context()
-        context.run(set_session_vars, platform="discord", user_id="u", actor_id="u",
-                    chat_id="c", thread_id="t", profile="default", cron_session="",
-                    session_id="physical", session_key="logical")
-        with patch.object(watch_tools, "handle", side_effect=lambda service, args, rt, **kw: rt.origin(kw["session_id"])):
-            origin = context.run(self.call, "gws_gmail_watch", {"action": "status"}, session_id="physical")
-            self.assertEqual(origin["session_key"], "logical")
-            self.assertFalse(context.run(self.call, "gws_gmail_watch", {"action": "status"}, session_id="child")["ok"])
+        with patch.object(watch_tools, "handle", return_value={"ok": True, "action": "status", "total": 0, "watches": []}) as handle:
+            self.assertTrue(json.loads(self.command('gmail {"action":"status"}', **kwargs))["ok"])
+            self.assertEqual(handle.call_args.kwargs["origin"]["session_id"], "physical")
+            self.assertEqual(handle.call_args.kwargs["origin"]["session_key"], "logical")
+            self.active_home = self.home / "other-profile"
+            self.assertEqual(json.loads(self.command('gmail {"action":"status"}', **kwargs))["error_code"], "profile_mismatch")
+            self.assertEqual(handle.call_count, 1)
+
+    def test_help_and_malformed_commands_never_reach_google(self):
+        with patch.object(plugin._PluginClient, "call", side_effect=AssertionError("No Google call")):
+            self.assertIn("Usage:", self.command("--help"))
+            for raw in ('gmail nope', 'drive []', 'other {}', 'gmail {"action":"status","action":"stop"}',
+                        'gmail {"minutes":NaN}', 'x' * 16001):
+                with self.subTest(raw=raw[:60]):
+                    self.assertEqual(json.loads(self.command(raw))["error_code"], "invalid_arguments")
 
 
 if __name__ == "__main__":

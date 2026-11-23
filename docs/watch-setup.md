@@ -1,6 +1,6 @@
 # Targeted Workspace watches: operator setup
 
-The public `gws-workspace` v0.9.1 plugin uses explicitly provisioned native accounts. [Native `gws` owns authentication](login.md); the optional `hermes-gws-remote-auth` companion is optional. No Python OAuth export/refresh or Pub/Sub pull is used.
+The unreleased v0.10.0 candidate changes how a user starts and manages a watch, not the Google accounts, worker or delivery routes. [Native `gws` owns authentication](login.md); no Python OAuth export/refresh or Pub/Sub pull is used.
 
 ## Provision Google ingress
 
@@ -107,15 +107,21 @@ Status reports lock/heartbeat, source errors/retries and cleanup, not Google del
 
 Subscription failures use durable backoff (initial retry 10 seconds, cap 900). `run --subscription-backoff-max SECONDS --retention-days DAYS` adjusts worker behavior. Fully cleaned terminal records are pruned hourly after the retention window (default 7 days); uncertain/in-flight evidence and pending cleanup are retained. Reconciliation defaults to 300 seconds and drains durable cursors independently of push hints; it is not full-resource polling.
 
-## Start a watch through the agent
+## Send a watch command
 
-Ask the agent to start the watch in the intended conversation. The tool snapshots its actual runtime session, profile, actor and route automatically; there is no manual bind command. Model destination arguments, missing bound context, mixed/cleared actors and delegated children (including children with rebound physical IDs) fail closed. Operator route provisioning is still required. See the [internal adapter disclosure](catalog-policy.md).
+Send `/gws-watch` or `/gws-watch help` in your messaging chat for usage. In a new chat, send a normal message first: commands do not create physical sessions. The gateway also accepts `/gws_watch`. It passes the service name and one JSON object directly to the handler, with no model interpretation. The agent can draft the command but cannot submit it on your behalf.
 
-```json
-{"tool":"gws_gmail_watch","arguments":{"action":"start","account":"user@example.com","target":{"thread_ids":["THREAD_ID"]},"filters":{"from_addresses":["alice@example.com"],"change_types":["messageAdded"]},"delivery_mode":"new_session","minutes":120,"stop_after_match":true}}
+Examples (substitute your account and exact IDs; send one line at a time):
+
+```text
+/gws-watch gmail {"action":"start","account":"person@example.com","target":{"thread_ids":["THREAD_ID"]},"filters":{"from_addresses":["alice@example.com"]},"delivery_mode":"new_session","minutes":120,"stop_after_match":true}
+/gws-watch drive {"action":"start","account":"person@example.com","target":{"file_ids":["FILE_ID"]},"delivery_mode":"same_session","minutes":30}
+/gws-watch calendar {"action":"start","account":"person@example.com","target":{"calendar_ids":["primary"],"event_ids":["EVENT_ID"]},"delivery_mode":"same_session","minutes":30}
+/gws-watch gmail {"action":"status"}
+/gws-watch gmail {"action":"stop","watch_id":"WATCH_ID"}
 ```
 
-Common fields: explicit `account`, `target`, optional `filters`, `delivery_mode` (`same_session` or `new_session`), `minutes` 1–1440, `stop_after_match`, `batch_seconds` 0–60, `instructions` up to 2000 characters, and `skills` only for new sessions. `status` optionally takes `watch_id`; `stop` requires it. Unknown/action-inappropriate fields refuse. Start is approval-gated and authorizes bounded background subscription operations, reads, renewal and cleanup.
+Common fields: explicit `account`, `target`, optional `filters`, `delivery_mode` (`same_session` or `new_session`), `minutes` 1–1440, `stop_after_match`, `batch_seconds` 0–60, `instructions` up to 2000 characters, and `skills` only for new sessions. `status` optionally takes `watch_id` for bounded target/filter details; otherwise it lists ten watches per page (pass the returned `next_offset` as `offset`). Oversized selector values are explicitly marked as previews. `filters`, when supplied, must be an object; `stop` requires the exact ID from `start` or `status`. Use the same service and originating chat. Unknown or action-inappropriate fields, including destination overrides, are rejected. Sending `start` authorizes bounded background subscription operations, reads, renewal and cleanup; it is not an agent tool approval prompt.
 
 ## Selectors and change types
 
@@ -130,7 +136,7 @@ Either boolean value of Gmail `has_attachment` requires verifiable `gmail.readon
 ## Honest delivery and coverage limits
 
 - Same-session lookup and injection are not atomic. A concurrent `/new` can replace the physical session between them. Acceptance means scheduled/admitted, not delivered. Ambiguous claims are not blindly replayed.
-- Current actor context is required; mixed/cleared actors refuse. Use trusted conversations or sender-isolated sessions: account slots within one operator profile are not separate tenants.
+- The gateway must identify the sender and an existing messaging session. Local/CLI, scheduled, webhook and senderless origins are refused. On the `whatsapp` bridge, commands require an explicitly non-shared DM; groups and unknown chat types are refused. This restriction is not applied to `whatsapp_cloud`. Use trusted conversations or sender-isolated sessions: account slots within one operator profile are not separate tenants.
 - Native HTTP accepted/duplicate receipts prove admission, not agent execution or external delivery. Operator configuration is an attestation, not remote receiver readback. No exactly-once guarantee.
 - Push may be lost/delayed; upstream changes can coalesce. Gmail history 404 resynchronizes with an unrecoverable gap, Calendar 410 rebuilds its snapshot with a gap, and rejected Drive cursors require explicit resync/restart. A full outbox pauses cursor advancement. A reserved one-shot event survives its collection deadline until forwarding or explicit stop.
 - Offline/synthetic transport and public-host tests are not live OAuth, real Pub/Sub push or native-session end-to-end evidence. See [compatibility](compatibility.md) for the pinned baseline and release checks.

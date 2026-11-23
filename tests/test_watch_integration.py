@@ -78,8 +78,7 @@ class HostIntegrationTests(unittest.TestCase):
         with mock.patch("hermes_constants.get_hermes_home", return_value=self.home):
             plugin.register(ctx)
         from gws_oauth_int.workspace_tools import SCHEMAS
-        self.assertEqual(set(tools), {"gws_accounts", "gws_api",
-                                      "gws_gmail_watch", "gws_drive_watch", "gws_calendar_watch"} | set(SCHEMAS))
+        self.assertEqual(set(tools), {"gws_accounts", "gws_api"} | set(SCHEMAS))
         self.assertIn("pre_gateway_dispatch", hooks)
         self.assertIn("pre_tool_call", hooks)
         self.assertFalse((self.home / "plugin-data" / "gws-oauth" / "worker.lock").exists())

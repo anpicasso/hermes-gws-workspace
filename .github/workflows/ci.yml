@@ -10,7 +10,7 @@ permissions:
 
 env:
   # Exact public Hermes host the plugin is tested against. Bump deliberately.
-  HERMES_REF: f7e2898aaefc8f967dbf7345e3999a65672fe60e
+  HERMES_REF: 0f602c5f6f18615632535251d62a2db74ce93b69
   GWS_VERSION: 0.22.5
   GWS_SHA256: de78ecdbd2f1a84cca0063a7ecbc440240fc14b6ebccbb17f4646b792a8c5c1f
 

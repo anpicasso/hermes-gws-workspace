@@ -147,6 +147,8 @@ def validate_common(args, *, mode_required=True):
     """Shared start fields; per-service target/filters are validated elsewhere."""
     if not isinstance(args, dict):
         raise WatchError("invalid_arguments", "arguments must be an object")
+    if "filters" in args and not isinstance(args["filters"], dict):
+        raise WatchError("invalid_arguments", "filters must be an object")
     account = clean_address(args.get("account"), "account")
     mode = args.get("delivery_mode")
     if mode_required and mode not in MODES:
@@ -449,7 +451,7 @@ class WatchStore:
             clauses.append("state IN ('active','matched')")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.read() as conn:
-            rows = conn.execute(f"SELECT * FROM watches{where} ORDER BY created_at DESC", values).fetchall()
+            rows = conn.execute(f"SELECT * FROM watches{where} ORDER BY created_at DESC, watch_id", values).fetchall()
         return [dict(row) for row in rows]
 
     def update_watch(self, watch_id, **fields):

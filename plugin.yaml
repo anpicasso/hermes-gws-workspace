@@ -1,8 +1,8 @@
 name: gws-workspace
-version: 0.9.1
+version: 0.10.0
 manifest_version: 2
 kind: standalone
-description: Multi-account native gws adapter, curated Workspace tools, approvals, and targeted push watches
+description: Multi-account native gws adapter, curated Workspace tools, approvals, and slash-command push watches
 license: MIT
 requires_hermes: ">=0.23.2"
 python_dependencies:
@@ -12,9 +12,6 @@ python_dependencies:
 provides_tools:
   - gws_accounts
   - gws_api
-  - gws_gmail_watch
-  - gws_drive_watch
-  - gws_calendar_watch
   - gws_gmail_search
   - gws_gmail_read
   - gws_gmail_draft

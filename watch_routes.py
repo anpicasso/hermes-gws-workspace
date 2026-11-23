@@ -115,6 +115,12 @@ class RouteManager:
             raise RouteError("route_destination_mismatch", "Operator destination must match the trusted origin")
         return route
 
+    def preflight(self, origin, mode, skills):
+        route = self._configured(origin, mode)
+        if mode == "new_session" and skills != route.get("skills", []):
+            raise RouteError("route_skills_mismatch", "Watch skills must match the operator-provisioned route")
+        return route
+
     def create(self, watch, spec, origin):
         mode = watch.get("mode") or spec["mode"]
         if mode == "same_session":
@@ -123,14 +129,13 @@ class RouteManager:
                 raise RouteError(capability["error_code"], capability["message"])
         if not origin.get("session_id") or not all(origin.get(k) for k in _ORIGIN_FIELDS if k != "thread_id"):
             raise RouteError("no_trusted_origin", "An exact physical-session binding is required")
-        route = self._configured(origin, mode)
+        route = self.preflight(origin, mode, spec.get("skills", []))
         name = (bridge_name if mode == "same_session" else route_name)(watch["watch_id"])
         metadata = {"name": name, "watch_id": watch["watch_id"], "mode": mode,
                     "profile": self.profile, "origin": origin, "generation": watch["generation"],
                     "digest": _digest(route), "bridge_name": route.get("bridge_name"),
                     "instructions": spec.get("instructions", ""), "skills": spec.get("skills", [])}
-        if mode == "new_session" and metadata["skills"] != route.get("skills", []):
-            raise RouteError("route_skills_mismatch", "Watch skills must match the operator-provisioned route")
+
         serialized = json.dumps(metadata, sort_keys=True)
         with self.store.tx() as conn:
             current = conn.execute("SELECT metadata FROM route_bindings WHERE name=?", (name,)).fetchone()

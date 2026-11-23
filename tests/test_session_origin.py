@@ -1,4 +1,4 @@
-"""Exercise real host context binding and watch dispatch without live delivery."""
+"""Real unchanged-host command dispatch; Google and final delivery are simulated."""
 import asyncio
 import contextvars
 import json
@@ -6,176 +6,165 @@ import os
 import sys
 import tempfile
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from unittest import mock
 
 HOST = Path(os.environ.get("HERMES_AGENT_SRC", Path.home() / ".hermes/hermes-agent"))
 sys.path.insert(0, str(HOST))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gateway import session_context as S
-from agent.delegation_context import delegated_child_context
-from session_origin import current_origin
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from session_origin import command_origin
 from watch import WatchError
 
 
 class OriginTests(unittest.TestCase):
-    def setUp(self):
-        self.context = contextvars.Context()
-        self.fields: dict[str, Any] = dict(platform="discord", chat_id="chat", thread_id="thread",
-                           user_id="actor", actor_id="actor", profile="default",
-                           session_id="physical", session_key="route", cron_session="")
-        self.context.run(S.set_session_vars, **self.fields)
-
-    def origin(self, sid="physical", profile="default"):
-        return self.context.run(current_origin, sid, profile)
-
-    def test_automatic_snapshot_without_command(self):
-        origin = self.origin()
-        self.assertEqual(origin["principal"], "actor")
-        self.assertEqual(origin["session_key"], "route")
-        self.assertEqual(origin["session_id"], "physical")
-        self.assertEqual(origin["thread_id"], "thread")
-        origin["chat_id"] = "tampered"
-        self.assertEqual(self.origin()["chat_id"], "chat")
-
-    def test_unbound_context_never_borrows_global_environment(self):
-        env = {"HERMES_SESSION_" + k: v for k, v in {
-            "ID": "physical", "KEY": "route", "PROFILE": "default",
-            "PLATFORM": "discord", "CHAT_ID": "chat", "ACTOR_ID": "actor"}.items()}
-        with mock.patch.dict(os.environ, env):
-            with self.assertRaises(WatchError):
-                contextvars.Context().run(current_origin, "physical", "default")
-
-    def test_id_profile_and_required_fields_fail_closed(self):
-        for sid, profile in (("", "default"), ("child", "default"), ("physical", "other")):
-            with self.assertRaises(WatchError):
-                self.origin(sid, profile)
-        for field in ("actor_id", "chat_id", "session_key", "profile"):
-            self.context.run(S.set_session_vars, **{**self.fields, field: ""})
-            with self.assertRaises(WatchError):
-                self.origin()
-
-    def test_child_inherited_route_refused_even_after_id_rebind(self):
-        def child(sid):
-            with delegated_child_context(sid):
-                self.assertEqual(S.get_session_env("HERMES_SESSION_ID"), sid)
-                with self.assertRaises(WatchError):
-                    current_origin(sid, "default")
-        for sid in ("physical", "child-rebound"):
-            self.context.run(child, sid)
-        self.assertEqual(self.origin()["session_id"], "physical")
-
-    def test_delegated_process_marker_refused(self):
-        with mock.patch.dict(os.environ, {"HERMES_DELEGATED_CHILD_CONTEXT": "1"}):
-            with self.assertRaises(WatchError):
-                self.origin()
-
-    def test_actor_clearing_never_falls_back_to_route_user(self):
-        event = SimpleNamespace(user_id="actor")
-        self.context.run(S.set_session_vars, **self.fields, turn_event=event)
-        self.assertEqual(self.origin()["principal"], "actor")
-        event.user_id = ""
+    def test_only_explicit_command_source_can_supply_origin(self):
+        source = SimpleNamespace(platform="discord", user_id="actor", chat_id="chat", thread_id="thread")
+        def origin(**overrides):
+            args = dict(source=source, session_id="physical", session_key="route", platform="discord", profile="default")
+            return command_origin(**{**args, **overrides})
+        self.assertEqual(origin()["principal"], "actor")
+        snapshot = origin()
+        source.user_id = ""
         with self.assertRaises(WatchError):
-            self.origin()
-
-    def test_nonconversation_surfaces_and_cron_refused(self):
-        for platform in ("webhook", "api_server", "cron", "cli", "kanban"):
-            self.context.run(S.set_session_vars, **{**self.fields, "platform": platform})
+            origin()
+        self.assertEqual(snapshot["principal"], "actor")
+        source.user_id = "actor"
+        with mock.patch.dict(os.environ, {"HERMES_SESSION_ID": "physical", "HERMES_SESSION_ACTOR_ID": "actor", "HERMES_SESSION_CHAT_ID": "chat"}):
+            for changes in ({"source": None}, {"session_id": ""}, {"session_key": ""},
+                            {"session_id": " physical"}, {"profile": ""}):
+                with self.subTest(changes=changes), self.assertRaises(WatchError):
+                    origin(**changes)
+        for name, value in (("chat_id", ""), ("profile", "foreign"), ("is_bot", True)):
+            original = getattr(source, name, None)
+            setattr(source, name, value)
             with self.assertRaises(WatchError):
-                self.origin()
-        self.context.run(S.set_session_vars, **{**self.fields, "cron_session": "1"})
-        with self.assertRaises(WatchError):
-            self.origin()
+                origin()
+            setattr(source, name, original)
+        for platform in ("local", "cli", "cron", "webhook", "api_server", "subagent"):
+            source.platform = platform
+            with self.subTest(platform=platform), self.assertRaises(WatchError):
+                origin(platform=platform)
 
-    def test_concurrent_contexts_do_not_mix_routes(self):
-        def run(i):
-            def resolve():
-                S.set_session_vars(**{**self.fields, "actor_id": f"u{i}", "chat_id": f"c{i}",
-                                      "session_id": f"s{i}", "session_key": f"k{i}"})
-                return current_origin(f"s{i}", "default")
-            return contextvars.Context().run(resolve)
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(run, range(4)))
-        for i, origin in enumerate(results):
-            self.assertEqual((origin["principal"], origin["chat_id"], origin["session_key"]),
-                             (f"u{i}", f"c{i}", f"k{i}"))
-
-    def test_missing_host_adapter_refused(self):
-        with mock.patch.dict(sys.modules, {"gateway.session_context": None}):
-            with self.assertRaises(WatchError):
-                self.origin()
+    def test_whatsapp_bridge_requires_an_explicit_nonshared_dm(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        source = SessionSource(platform=Platform.WHATSAPP, user_id="u", chat_id="c", chat_type="dm")
+        def capture():
+            return command_origin(source, "s", "k", "whatsapp", "default")
+        self.assertEqual(capture()["principal"], "u")
+        for source.chat_type, source.shared_session in (("group", False), ("", False), ("dm", True)):
+            with self.subTest(chat=source.chat_type, shared=source.shared_session), self.assertRaises(WatchError):
+                capture()
 
 
 class GatewayDispatchTests(unittest.TestCase):
-    def test_primary_profile_watch_status_through_tool_call(self):
+    def test_slash_lifecycle_and_saved_same_session_injection(self):
         from gateway.config import GatewayConfig, Platform
         from gateway.platforms.event import MessageEvent
-        from gateway.session import SessionEntry, SessionSource, build_session_context
-        from gateway.session_identity import clear_identity
+        from gateway.session import SessionEntry, SessionSource
+        from gateway.run import GatewayRunner
+        from hermes_cli.plugins import get_plugin_manager, get_plugin_command_handler
+        from hermes_cli.plugins_context import PluginContext
         from hermes_cli.plugins_manifest import parse_manifest_file
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from fake_google import FakeGoogle
+        from test_watch_routes import config_for
+        import watch
 
         repo = Path(__file__).resolve().parents[1]
         tmp = self.enterContext(tempfile.TemporaryDirectory())
-        self.enterContext(mock.patch.dict(os.environ, {
-            "HOME": tmp, "HERMES_HOME": str(Path(tmp) / ".hermes"), "HERMES_DISABLE_LAZY_INSTALLS": "1",
-        }))
-        from gateway.run import GatewayRunner
-        from hermes_cli.plugins import get_plugin_manager
-        from hermes_cli.profiles import get_active_profile_name
-        from model_tools import handle_function_call
-
-        manager = get_plugin_manager()
-        manifest = parse_manifest_file(repo / "plugin.yaml", repo, "user", "")
-        assert manifest is not None
-        manager._load_plugin(manifest)
-        self.addCleanup(manager.unload, manifest)
-        runner = GatewayRunner.__new__(GatewayRunner)  # No credentials or listeners.
+        home = Path(tmp) / ".hermes"
+        home.mkdir()
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": tmp, "HERMES_HOME": str(home), "HERMES_DISABLE_LAZY_INSTALLS": "1"}))
+        token = set_hermes_home_override(home)
+        self.addCleanup(reset_hermes_home_override, token)
+        runner = GatewayRunner.__new__(GatewayRunner)  # No network listeners or credentials.
         runner.config = GatewayConfig(multiplex_profiles=True)
         profile = runner._primary_profile_name = get_active_profile_name()
-        source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="actor")
-        identity = runner._canonicalize(source)
-        assert identity is not None
-        self.assertEqual(identity.runtime_profile, profile)
-        self.assertIsNone(source.profile)
-        event = MessageEvent(text="status", source=source, user_id="actor")
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="actor", thread_id="thread")
+        runner._canonicalize(source)
+        key = runner._session_key_for_source(source)
         now = datetime.now(timezone.utc)
-        entry = SessionEntry(runner._session_key_for_source(source), "physical", now, now)
+        entry = SessionEntry(key, "physical", now, now)
+        origin = command_origin(source, entry.session_id, key, "telegram", profile)
+        settings = {"watch_routes": config_for(origin), "watch_gmail_topic": "projects/p/topics/t",
+                    "watch_gmail_subscription": "projects/p/subscriptions/s",
+                    "watch_gmail_push_audience": "https://watch.example.invalid/google/gmail",
+                    "watch_gmail_push_service_account": "push@p.iam.gserviceaccount.com",
+                    "watch_callback_url": "https://watch.example.invalid"}
+        (home / "config.yaml").write_text(json.dumps({"plugins": {"entries": {"gws-workspace": {"settings": settings}}}}))
+        manager = get_plugin_manager()
+        manifest = parse_manifest_file(repo / "plugin.yaml", repo, "user", "")
+        self.assertIsNotNone(manifest)
+        manager._load_plugin(manifest)
+        self.addCleanup(manager.unload, manifest)
+        handler = get_plugin_command_handler("gws-watch")
+        self.assertIsNotNone(handler)
+        self.assertIs(get_plugin_command_handler("gws_watch"), handler)
+        client = FakeGoogle()
+        client.add_calendar("person@example.com", primary=True)
+        self.enterContext(mock.patch.dict(handler.__globals__, {"_PluginClient": lambda *args: client}))
+        injected = []
+        self.enterContext(mock.patch.object(PluginContext, "inject_message", side_effect=lambda content, *, session_key: injected.append((content, session_key)) or True))
+        store = watch.WatchStore(home)
 
-        def dispatch(service="calendar", sid="physical"):
-            args = {"calls": [{"name": f"gws_{service}_watch", "arguments": {"action": "status"}}]}
-            def call():
-                return handle_function_call("tool_call", args, session_id=sid, enabled_toolsets=["gws_workspace"])
-            return json.loads(asyncio.run(runner._run_in_executor_with_context(call)))
+        async def dispatch(service, args, selected_source=source, selected_entry=entry):
+            text = '/gws_watch ' + service + ' ' + json.dumps(args)
+            event = MessageEvent(text=text, source=selected_source, user_id=selected_source.user_id)
+            raw = await runner._hm_run_plugin_handler(handler, event, selected_source, selected_entry)
+            return json.loads(raw)
 
-        def exercise():
-            with runner._session_env_scope(build_session_context(source, runner.config, entry, event)):
-                self.assertEqual(S._bound_session_value("HERMES_SESSION_PROFILE"), "")
-                for service in ("gmail", "drive", "calendar"):
-                    result = dispatch(service)
-                    self.assertTrue(result.get("ok"), result)
-                    self.assertEqual(result["watches"], [])
-                self.assertEqual(dispatch(sid="other")["error_code"], "no_trusted_origin")
-                with delegated_child_context("child"):
-                    self.assertEqual(dispatch(sid="child")["error_code"], "no_trusted_origin")
-                clear_identity(source)
-                self.assertEqual(dispatch()["error_code"], "no_trusted_origin")
-                runner._canonicalize(source, primary_home=Path(tmp) / "other-home")
-                self.assertEqual(dispatch()["error_code"], "no_trusted_origin")
-                clear_identity(source)
-                runner._primary_profile_name = "foreign"
-                runner._canonicalize(source)
-                self.assertEqual(dispatch()["error_code"], "no_trusted_origin")
-                clear_identity(source)
-                runner._primary_profile_name = profile
-                runner._canonicalize(source)
-                event.absorb_turn_input(MessageEvent(text="another sender", user_id="other"))
-                self.assertEqual(dispatch()["error_code"], "no_trusted_origin")
+        async def exercise():
+            from importlib import import_module
+            # Exercise the real access resolver before invoking the lifecycle handler below.
+            with mock.patch.dict(runner.config.platforms, {source.platform: SimpleNamespace(extra={"allow_admin_from": ["admin"]})}):
+                for name in ("gws-watch", "gws_watch"):
+                    event = MessageEvent(text="/" + name + " help", source=source)
+                    expected = runner._check_slash_access(source, name)
+                    self.assertTrue(expected)
+                    self.assertEqual(await runner._hm_resolve_command(event, source, key), (True, expected, name, name))
+            routes_module = import_module(handler.__module__ + '.watch_routes')
+            fake_ctx = SimpleNamespace(inject_message=lambda content, *, session_key: injected.append((content, session_key)) or True)
+            routes = routes_module.RouteManager(fake_ctx, store=store, config=settings["watch_routes"], profile=profile)
+            bridge = routes_module.bridge_hook(store, fake_ctx, routes, profile=profile)
+            for service, target in (("gmail", {"mailbox": True}), ("drive", {"all_files": True}),
+                                    ("calendar", {"calendar_ids": ["primary"]})):
+                for mode in ("same_session", "new_session"):
+                    args = {"action": "start", "account": "person@example.com", "target": target,
+                            "delivery_mode": mode, "minutes": 5}
+                    started = await dispatch(service, args)
+                    self.assertTrue(started.get("ok"), started)
+                    wid = started["watch"]["watch_id"]
+                    self.assertEqual(json.loads(store.get_watch(wid)["origin_json"]), origin)
+                    self.assertTrue((await dispatch(service, args))["already_active"])
+                    status = await dispatch(service, {"action": "status", "watch_id": wid})
+                    self.assertEqual(status["watch"]["state"], "active")
+                    if mode == "same_session":
+                        eid = "event-" + wid
+                        store.add_event(wid, eid, service, {"summary": "synthetic change"})
+                        event = SimpleNamespace(raw_message={"event_type": "gws-watch-bridge", "watch_id": wid, "event_id": eid, "generation": 1},
+                            source=SimpleNamespace(chat_name="webhook/gws-watch-bridge-main", platform="webhook", user_id="webhook:gws-watch-bridge-main", profile=profile))
+                        receipt = await bridge(event=event, session_store=SimpleNamespace(lookup_by_session_key=lambda _: entry))
+                        self.assertEqual(receipt["reason"], "gws watch bridge: consumed")
+                        self.assertEqual(injected[-1][1], key)
+                        self.assertEqual(store.outbox(wid)[0]["state"], "scheduled")
+                    foreign = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="other", thread_id="thread")
+                    denied = await dispatch(service, {"action": "stop", "watch_id": wid}, foreign)
+                    self.assertEqual(denied["error_code"], "not_found")
+                    self.assertEqual((await dispatch(service, {"action": "stop", "watch_id": wid}))["watch"]["state"], "stopped")
+                rejected = await dispatch(service, {**args, "session_id": "forged"})
+                self.assertEqual(rejected["error_code"], "invalid_arguments")
+            self.assertEqual(len(injected), 3)
+            no_session = SessionEntry(key, "", now, now)
+            result = await dispatch("gmail", {"action": "status"}, selected_entry=no_session)
+            self.assertEqual(result["error_code"], "no_trusted_origin")
+            self.assertIn("normal message", result["error"])
 
-        contextvars.Context().run(exercise)
+        contextvars.copy_context().run(asyncio.run, exercise())
 
 
 if __name__ == "__main__":

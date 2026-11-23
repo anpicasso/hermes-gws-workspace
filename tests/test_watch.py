@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -55,28 +56,28 @@ class StoreTests(unittest.TestCase):
                 watch.clean_domain(bad)
 
     def test_strict_action_fields_and_service_mismatch(self):
-        result = watch_tools.handle("gmail", {"action": "status", "account": "x"}, self.rt)
+        result = watch_tools.handle("gmail", {"action": "status", "account": "x"}, self.rt, origin=self.rt.origin())
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "invalid_arguments")
-        result = watch_tools.handle("drive", {"action": "status", "watch_id": "gmail-id"}, self.rt)
+        result = watch_tools.handle("drive", {"action": "status", "watch_id": "gmail-id"}, self.rt, origin=self.rt.origin())
         self.assertFalse(result["ok"])
 
     def test_start_status_stop_and_principal_isolation(self):
         started = start_gmail(self.rt, target={"thread_ids": ["THREAD_1"]})
         self.assertTrue(started["ok"], started)
         watch_id = started["watch"]["watch_id"]
-        status = watch_tools.handle("gmail", {"action": "status", "watch_id": watch_id}, self.rt)
+        status = watch_tools.handle("gmail", {"action": "status", "watch_id": watch_id}, self.rt, origin=self.rt.origin())
         self.assertTrue(status["ok"])
         self.assertEqual(status["watch"]["target"]["thread_ids"], ["THREAD_1"])
         other = runtime(self.store, self.client, self.routes, origin=make_origin("user-2"))
-        denied = watch_tools.handle("gmail", {"action": "status", "watch_id": watch_id}, other)
+        denied = watch_tools.handle("gmail", {"action": "status", "watch_id": watch_id}, other, origin=other.origin())
         self.assertFalse(denied["ok"])
         self.assertEqual(denied["error_code"], "not_found")
-        stopped = watch_tools.handle("gmail", {"action": "stop", "watch_id": watch_id}, self.rt)
+        stopped = watch_tools.handle("gmail", {"action": "stop", "watch_id": watch_id}, self.rt, origin=self.rt.origin())
         self.assertTrue(stopped["ok"])
         self.assertEqual(stopped["watch"]["state"], "stopped")
         self.assertEqual(stopped["remote_cleanup"], "pending")
-        again = watch_tools.handle("gmail", {"action": "stop", "watch_id": watch_id}, self.rt)
+        again = watch_tools.handle("gmail", {"action": "stop", "watch_id": watch_id}, self.rt, origin=self.rt.origin())
         self.assertTrue(again["ok"])
 
     def test_identical_start_is_idempotent_and_changed_selector_is_new(self):
@@ -129,10 +130,68 @@ class StoreTests(unittest.TestCase):
                       {"filters": {"from_addresses": []}}, {"minutes": 0},
                       {"batch_seconds": 61}):
             args = {**base, **extra}
-            result = watch_tools.handle("gmail", args, self.rt)
+            result = watch_tools.handle("gmail", args, self.rt, origin=self.rt.origin())
             self.assertFalse(result["ok"], (extra, result))
         skills = {**base, "delivery_mode": "same_session", "skills": ["x"]}
-        self.assertEqual(watch_tools.handle("gmail", skills, self.rt)["error_code"], "invalid_arguments")
+        self.assertEqual(watch_tools.handle("gmail", skills, self.rt, origin=self.rt.origin())["error_code"], "invalid_arguments")
+
+    def test_non_object_filters_never_touch_accounts_or_google(self):
+        for service, target in (("gmail", {"mailbox": True}), ("drive", {"all_files": True}),
+                                ("calendar", {"calendar_ids": ["primary"]})):
+            for invalid in (None, False, "", [], 0, ["x"]):
+                args = {"action": "start", "account": "person@example.com", "delivery_mode": "new_session",
+                        "target": target, "filters": invalid}
+                with self.subTest(service=service, invalid=invalid):
+                    self.assertEqual(watch_tools.handle(service, args, self.rt, origin=self.rt.origin())["error_code"], "invalid_arguments")
+        self.assertFalse((self.home / "gws-oauth").exists())
+        self.assertEqual(self.client.calls, [])
+
+    def test_operator_route_checked_before_google_and_again_before_binding(self):
+        from test_watch_routes import config_for
+        from watch_routes import RouteManager
+        config = config_for(self.rt.origin())
+        self.rt.routes = RouteManager(store=self.store, config=config)
+        other = runtime(self.store, self.client, self.rt.routes, origin=make_origin("other"))
+        self.assertEqual(start_gmail(other)["error_code"], "route_not_configured")
+        self.assertEqual(start_gmail(self.rt, skills=["absent"])["error_code"], "route_skills_mismatch")
+        self.assertFalse((self.home / "gws-oauth").exists())
+        self.assertEqual(self.client.calls, [])
+        with patch.object(self.rt.routes, "config", side_effect=[config, {"routes": []}]):
+            self.assertEqual(start_gmail(self.rt)["error_code"], "route_not_configured")
+        self.assertTrue(self.client.calls)
+        self.assertEqual(self.store.list_watches(), [])
+
+    def test_status_pages_reach_all_owned_ids_and_bound_selectors(self):
+        ids = {start_gmail(self.rt, minutes=i)["watch"]["watch_id"] for i in range(1, 53)}
+        def status(**fields):
+            result = watch_tools.handle("gmail", {"action": "status", **fields}, self.rt, origin=self.rt.origin())
+            reply = watch_tools.command_reply(result)
+            self.assertLessEqual(len(reply), 2000)
+            return json.loads(reply)
+        seen = []
+        offset = 0
+        while offset is not None:
+            page = status(offset=offset)
+            self.assertEqual(page["total"], len(ids))
+            seen.extend(row["watch_id"] for row in page["watches"])
+            self.assertLessEqual(len(page["watches"]), 10)
+            offset = page["next_offset"]
+            self.assertEqual(page["has_more"], offset is not None)
+            if offset is not None:
+                self.assertEqual(offset, len(seen))
+        self.assertCountEqual(seen, ids)
+        exact = status(watch_id=seen[-1])["watch"]
+        self.assertIs(exact["target"]["mailbox"], True)
+        self.assertEqual(exact["filters"]["change_types"], ["messageAdded"])
+        for fields in ({"offset": True}, {"offset": -1}, {"offset": 0, "watch_id": seen[0]}):
+            self.assertEqual(status(**fields)["error_code"], "invalid_arguments")
+        long = start_gmail(self.rt, filters={"subject_contains": ['"\\' * 100, '💬' * 200]})
+        wid = long["watch"]["watch_id"]
+        self.store.update_watch(wid, gap='"' * 2000, last_error='\\' * 2000)
+        detail = status(watch_id=wid)["watch"]
+        self.assertNotIn("filters", detail)
+        self.assertTrue(detail["filters_preview"].endswith("..."))
+        self.assertEqual(detail["watch_id"], wid)
 
     def test_new_watch_restarts_a_stopped_source_from_its_fresh_baseline(self):
         first = start_gmail(self.rt, target={"thread_ids": ["T1"]})
@@ -174,8 +233,8 @@ class StoreTests(unittest.TestCase):
         wid = started["watch"]["watch_id"]
         for action in ("status", "stop"):
             self.assertEqual(watch_tools.handle("gmail", {"action": action, "watch_id": wid},
-                                               other)["error_code"], "not_found")
-        self.assertEqual(watch_tools.handle("gmail", {"action": "status"}, other)["watches"], [])
+                                               other, origin=other.origin())["error_code"], "not_found")
+        self.assertEqual(watch_tools.handle("gmail", {"action": "status"}, other, origin=other.origin())["watches"], [])
 
     def test_fingerprint_distinguishes_timing_and_physical_same_session(self):
         common = watch.validate_common({"account": "person@example.com", "delivery_mode": "same_session"})

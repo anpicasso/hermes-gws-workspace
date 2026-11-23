@@ -26,11 +26,14 @@ class FakeRoutes:
         self.same_session = same_session
         self.post_result = {"ok": True, "status": 202, "duplicate": False, "admission": "accepted"}
 
-    def create(self, watch, spec, origin):
-        if spec["mode"] == "same_session" and not self.same_session:
+    def preflight(self, origin, mode, skills):
+        if mode == "same_session" and not self.same_session:
             raise watch_routes.RouteError(
                 "same_session_host_unsupported",
                 "same-session requires a callable plugin session injection")
+
+    def create(self, watch, spec, origin):
+        self.preflight(origin, spec["mode"], spec["skills"])
         if spec["mode"] == "same_session":
             name = watch_routes.bridge_name(watch["watch_id"])
         else:
@@ -81,7 +84,7 @@ def start_gmail(runtime_, *, target=None, filters=None, mode="new_session", **ex
             "delivery_mode": mode, "minutes": 60}
     args.update(extra)
     from watch_tools import handle
-    return handle("gmail", args, runtime_)
+    return handle("gmail", args, runtime_, origin=runtime_.origin())
 
 
 def start_drive(runtime_, *, target=None, filters=None, mode="new_session", **extra):
@@ -90,7 +93,7 @@ def start_drive(runtime_, *, target=None, filters=None, mode="new_session", **ex
             "delivery_mode": mode, "minutes": 60}
     args.update(extra)
     from watch_tools import handle
-    return handle("drive", args, runtime_)
+    return handle("drive", args, runtime_, origin=runtime_.origin())
 
 
 def start_calendar(runtime_, *, target=None, filters=None, mode="new_session", **extra):
@@ -99,7 +102,7 @@ def start_calendar(runtime_, *, target=None, filters=None, mode="new_session", *
             "delivery_mode": mode, "minutes": 60}
     args.update(extra)
     from watch_tools import handle
-    return handle("calendar", args, runtime_)
+    return handle("calendar", args, runtime_, origin=runtime_.origin())
 
 
 def as_json(value):

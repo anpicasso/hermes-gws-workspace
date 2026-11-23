@@ -1,8 +1,4 @@
-"""Automatic watch origins from bound runtime context, never process-global routes.
-
-Compatibility exception: the bound-only reader and delegation guard are internal
-Hermes APIs. Keep this adapter small and fail closed if their contract disappears.
-"""
+"""Watch origins from host-dispatched slash-command context only."""
 from __future__ import annotations
 
 if __package__:
@@ -14,52 +10,40 @@ else:
 def _text(value, *, optional=False):
     if optional and value in (None, ""):
         return None
-    if (not isinstance(value, str) or not value.strip() or len(value) > 1024
-            or any(ord(c) < 32 or ord(c) == 127 for c in value)):
-        raise WatchError("no_trusted_origin", "Trusted runtime session context is missing or invalid")
+    if (not isinstance(value, str) or not value.strip() or value != value.strip()
+            or len(value) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise WatchError("no_trusted_origin", "The command needs a valid messaging session, chat and sender")
     return value
 
 
-def current_origin(session_id, profile, *, home=None):
-    """Snapshot this tool call's origin; no manual bind or model destination.
+def command_origin(source, session_id, session_key, platform, profile):
+    """Snapshot public command kwargs, never text arguments or ambient route state.
 
-    A child's physical ID can be rebound while retaining its parent's route.
-    Check delegation lineage first, not just equality of the physical IDs.
+    The caller checks its registered profile home before entering here. A source
+    with no explicit profile uses that command's routed PluginContext profile.
+    This function is not exposed as a model tool or a general origin reader.
     """
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
-        from gateway.session_context import _bound_session_value, _SESSION_TURN_EVENT
-        from gateway.session_identity import identity_of
-    except ImportError:
-        raise WatchError("no_trusted_origin", "This Hermes host lacks the required bound-context adapter") from None
-    if is_delegated_child_process_context():
-        raise WatchError("no_trusted_origin", "Start or manage watches from the originating agent, not a delegated child")
-
-    sid, profile = _text(session_id), _text(profile)
-    # ponytail: read only bound ContextVars; get_session_env can borrow global routes.
-    def bound(field, *, optional=False):
-        return _text(_bound_session_value("HERMES_SESSION_" + field), optional=optional)
-
-    session_profile = _bound_session_value("HERMES_SESSION_PROFILE")
-    if session_profile == "":
-        # The primary gateway route has no wire profile. Only its pinned turn
-        # identity can supply one; an unset ContextVar is not a primary route.
-        identity = identity_of(getattr(_SESSION_TURN_EVENT.get(), "source", None))
-        if identity is None or identity.runtime_home.resolve() != home:
-            raise WatchError("no_trusted_origin", "No matching gateway profile identity is bound to this turn")
-        session_profile = identity.runtime_profile
-    if bound("ID") != sid or _text(session_profile) != profile:
-        raise WatchError("no_trusted_origin", "Tool session or profile does not match its runtime origin")
-    platform = bound("PLATFORM")
+    platform, profile = _text(platform), _text(profile)
     if platform in {"webhook", "msgraph_webhook", "api", "api_server", "cron",
-                    "cli", "tui", "local", "desktop", "kanban", "tool", "gateway"}:
-        raise WatchError("no_trusted_origin", "This surface cannot originate conversational watch delivery")
-    if _bound_session_value("HERMES_CRON_SESSION") == "1":
-        raise WatchError("no_trusted_origin", "Scheduled runs cannot borrow a conversation origin")
-    actor = bound("ACTOR_ID")  # Never fall back to route user_id after actor clearing.
+                    "cli", "tui", "local", "desktop", "kanban", "tool", "gateway",
+                    "subagent"}:
+        raise WatchError("no_trusted_origin", "Use /gws-watch in the originating messaging conversation")
+    source_platform = getattr(source, "platform", None)
+    if getattr(source_platform, "value", source_platform) != platform:
+        raise WatchError("no_trusted_origin", "Command source and platform do not match")
+    if getattr(source, "profile", None) not in (None, "", profile):
+        raise WatchError("no_trusted_origin", "Command source belongs to another profile")
+    if getattr(source, "is_bot", False):
+        raise WatchError("no_trusted_origin", "A bot-authored command cannot create a watch origin")
+    # The WhatsApp bridge batches by session; command kwargs do not carry the merged event's actor.
+    if platform == "whatsapp" and (getattr(source, "chat_type", None) != "dm" or getattr(source, "shared_session", False)):
+        raise WatchError("no_trusted_origin", "Use a private WhatsApp DM; shared WhatsApp commands cannot identify a single sender")
+    if not session_id:
+        raise WatchError("no_trusted_origin", "Send a normal message first to create this chat's session, then retry /gws-watch")
+    actor = _text(getattr(source, "user_id", None))
     origin = {"profile": profile, "principal": actor, "user_id": actor,
-              "platform": platform, "chat_id": bound("CHAT_ID"),
-              "session_id": sid, "session_key": bound("KEY")}
+              "platform": platform, "chat_id": _text(getattr(source, "chat_id", None)),
+              "session_id": _text(session_id), "session_key": _text(session_key)}
     for field in ("thread_id", "scope_id", "parent_chat_id", "chat_type"):
-        origin[field] = bound(field.upper(), optional=True)
+        origin[field] = _text(getattr(source, field, None), optional=True)
     return origin

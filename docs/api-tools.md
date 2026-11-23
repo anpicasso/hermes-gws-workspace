@@ -1,6 +1,6 @@
 # Workspace tools and approvals
 
-The public `gws-workspace` v0.9.1 adapter leaves credentials and refresh to native `gws`. Start with [OAuth setup](oauth-setup.md) and [operator provisioning](login.md); see the [catalog disclosure](catalog-policy.md). The separate `hermes-gws-remote-auth` companion is optional, not a public runtime dependency.
+The public `gws-workspace` adapter leaves credentials and refresh to native `gws`. Start with [OAuth setup](oauth-setup.md) and [operator provisioning](login.md); see the [catalog disclosure](catalog-policy.md). The separate `hermes-gws-remote-auth` companion is optional, not a public runtime dependency.
 
 One profile is one trusted operator. Every connected Google account belongs to that operator; every session authorized to use this profile can use those accounts. Choose an explicit `account` on every Workspace call. Use separate profiles and access controls for different operators.
 
@@ -14,7 +14,8 @@ Prefer the curated tools for common jobs; use `gws_schema` to discover native re
 - Discovery: `gws_schema` → `schema <service.resource.method>`; optional `resolve_refs=true`.
 - Advanced: `gws_api(account,args)` takes exact CLI tokens, not a shell command.
 - Accounts: `gws_accounts` lists provisioned slots; `check_health=true` requests sanitized native status. `check_lifecycle=true` requires one account and no health request; it reports credential use for companion coordination, not permission to remove credentials. A slot name is not Google identity proof.
-- Monitoring: the separate Gmail/Drive/Calendar watch tools are described in [watch-setup.md](watch-setup.md).
+
+Watches are not agent tools in the v0.10.0 candidate. Users send [`/gws-watch` commands](watch-setup.md#send-a-watch-command) in the originating messaging chat.
 
 Schemas reject unknown fields, invalid types, malformed mail headers, and out-of-range requests. Searches return one bounded page; pass the returned page token to continue. IDs are never repaired or guessed.
 
@@ -51,5 +52,3 @@ The same `pre_tool_call` hook classifies generic and curated calls before execut
 Curated approval previews always show recipients, attendees, share targets and paths in full; only body/description/message text is shortened. Generic `gws_api` previews are bounded and marked when truncated; inspect the full intended operation before approving a long generic request. A successful remote mutation followed by a local output/transport failure is not safe to blindly retry: read back the remote object first.
 
 The operator selects native login scopes; the public plugin does not choose a login preset or widen grants. The OAuth client, consent screen, Google policy and actual granted scopes govern access. `gws_accounts(check_health=true)` reports sanitized granted scopes, never credentials.
-
-Watch calls capture the current runtime origin automatically and require an exact operator-provisioned route. No manual bind command is required; model-supplied destinations, unbound contexts and delegated children are refused. Automatic origin capture does not create operator routes. See [watch setup](watch-setup.md) for `change_types`, push authentication and delivery limits.

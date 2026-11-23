@@ -2,7 +2,7 @@
 
 ## Distribution and credential ownership
 
-`gws-workspace` v0.9.1 is independently distributed. No Hermes catalog admission or Nous Research endorsement is claimed. Validation checks do not establish manual policy compliance. The policy reference is the [catalog admission rules](https://github.com/NousResearch/hermes-agent/blob/05348a3094a2356b9a271a2f22cdd6711c9952b8/plugin-catalog/README.md); admission requires review against the applicable rules.
+`gws-workspace` v0.9.1 is the published release; v0.10.0 is an unreleased candidate. [Catalog PR #157482](https://github.com/NousResearch/hermes-agent/pull/157482) is a draft pending user live testing. Validation checks do not establish compliance with the [catalog admission rules](https://github.com/NousResearch/hermes-agent/blob/05348a3094a2356b9a271a2f22cdd6711c9952b8/plugin-catalog/README.md) or imply Nous Research endorsement.
 
 Native `gws`, not Python or Hermes' credential broker, owns Google credential storage, decryption and refresh. The public adapter selects an explicitly provisioned account directory and invokes short, locked native commands. It does not export OAuth credentials, refresh access tokens in Python, implement login, or register `gws_login`/`gws_logout`. The optional, separately distributed `hermes-gws-remote-auth` companion (`gws-remote-auth` plugin) is separately installed and is not required for public operation.
 
@@ -10,16 +10,22 @@ This still differs from rule 11's Hermes-managed `oauth:` declaration, `hermes a
 
 ## Public host surfaces and operator responsibility
 
-The adapter uses public tool/hook registration, the approval directive and `ctx.inject_message`. Automatic watch origin capture deliberately uses internal host APIs: `gateway.session_context._bound_session_value`, `gateway.session_context._SESSION_TURN_EVENT`, `gateway.session_identity.identity_of` and `agent.delegation_context.is_delegated_child_process_context`. They avoid global-environment fallback and inherited parent routes; this is a compatibility/policy exception requiring maintainer review, not a claim of public-API-only compliance. Routing does not import private webhook helpers, discover native subscription files, or create/edit/delete Hermes routes. Operators provision routes through public Hermes commands and configure exact route attestations; see [the route contract](routes-contract.md).
+The candidate registers `/gws-watch` with `ctx.register_command` and reads origin only from host command metadata in the registered profile/home. It removes the three agent watch tools and their private session/delegation imports; no core patch is required. Tool approval and `ctx.inject_message` are unchanged. Operators provision routes through public Hermes commands and configure exact route attestations; see [the route contract](routes-contract.md).
 
 The attestation is not remote readback: direct receiver edits are undetectable if the plugin configuration is unchanged. Stop watches before changing receiver destinations, prompts, skills, signature mode or secrets, and verify the receiver through its public CLI. Config digest checks prevent silent retargeting through changed plugin configuration, not malicious operator behavior.
+
+### Upstream follow-up: trusted origin for agent tools
+
+To support agent-initiated watches again, Hermes would need a public, host-issued origin for the **current tool call**: physical session ID and route key, profile/home, current actor, platform, chat and optional thread. It should return no usable origin for unbound, mixed-actor, delegated or non-messaging calls, even when they inherit a parent route. A session ID or a process environment value alone is not proof. This proposal is separate from the catalog review and is not a dependency of the slash command.
+
+Upstream API request: [#159074](https://github.com/NousResearch/hermes-agent/issues/159074). Proposed implementation: [#159075](https://github.com/NousResearch/hermes-agent/pull/159075). These explicitly acknowledge the related admitted-origin proposal [#142762](https://github.com/NousResearch/hermes-agent/pull/142762); the plugin needs one supported contract, not competing APIs. Neither proposal is a dependency of this candidate.
 
 ## Approval and trust boundaries
 
 - One profile represents one trusted operator. Authorized sessions can use all its accounts; account slots are not tenants or isolation from other processes under the same OS user.
 - Mutations, sends/shares, uploads, local file input/output and unknown native operations request Hermes approval. The host's approval mode and grants still apply. Model-supplied approval fields cannot authorize calls.
-- Watch start authorizes bounded background subscription operations, renewal, reads and cleanup. The worker does not ask on each renewal.
-- Watch calls require the current bound actor, physical session and profile. Mixed/cleared actors, delegated children and missing context fail closed. This does not turn a shared operator profile into isolated tenants or defend against another trusted plugin forging host context.
+- Sending the `start` slash command authorizes bounded background subscription operations, renewal, reads and cleanup. Watch commands do not go through the agent's `pre_tool_call` approval path. The worker does not ask on each renewal.
+- Watch commands require an identified sender in an existing messaging session and the registered profile/home. On the WhatsApp bridge only explicitly non-shared DMs are supported. Request JSON cannot override the origin. This does not turn a shared operator profile into isolated tenants or defend against another trusted plugin forging host context.
 - Same-session delivery retains a concurrent `/new` race: checking the physical session and admitting injection are not atomic. HTTP admission or injection acceptance is not execution or external delivery confirmation; no exactly-once guarantee is claimed.
 
 ## Operational and privacy disclosures
