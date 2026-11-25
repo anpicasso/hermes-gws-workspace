@@ -51,6 +51,18 @@ def _digest(route):
     return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _native_endpoint(url):
+    """One receiver: bare default and /p/default/ are aliases on the same host/port."""
+    if isinstance(url, str):
+        try:
+            p = urllib.parse.urlsplit(url)
+            port = p.port if p.port is not None else {"http": 80, "https": 443}.get(p.scheme)
+            return p.scheme, (p.hostname or "").rstrip("."), port, p.path.removeprefix("/p/default/").lstrip("/")
+        except ValueError:
+            pass
+    return None
+
+
 _ORIGIN_FIELDS = ("profile", "principal", "platform", "chat_id", "thread_id", "session_key")
 
 
@@ -88,7 +100,8 @@ class RouteManager:
     def _configured(self, origin, mode):
         if origin.get("profile") != self.profile:
             raise RouteError("route_profile_mismatch", "Origin belongs to another profile")
-        matches = [entry for entry in self._entries() if isinstance(entry, dict)
+        entries = self._entries()
+        matches = [entry for entry in entries if isinstance(entry, dict)
                    and entry.get("origin") == {key: origin.get(key) for key in _ORIGIN_FIELDS}]
         if len(matches) != 1 or mode not in ("new_session", "same_session"):
             raise RouteError("route_not_configured", "Configure exactly one operator route for this trusted origin")
@@ -98,8 +111,8 @@ class RouteManager:
         name = route.get("bridge_name" if mode == "same_session" else "name", "")
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name):
             raise RouteError("route_config_invalid", "Operator route name is invalid")
-        if mode == "same_session" and not name.startswith("gws-watch-bridge-"):
-            raise RouteError("route_config_invalid", "Bridge names must start with gws-watch-bridge- for fail-closed interception")
+        if name.startswith("gws-watch-bridge-") != (mode == "same_session"):
+            raise RouteError("route_config_invalid", "Only same-session bridge names must start with gws-watch-bridge-")
         secret, url = route.get("secret"), route.get("url")
         if not isinstance(secret, str) or len(secret) < 32 or not isinstance(url, str):
             raise RouteError("route_config_invalid", "Operator URL and a strong HMAC secret are required")
@@ -110,9 +123,18 @@ class RouteManager:
                 or parsed.path not in ((f"/webhooks/{name}", f"/p/default/webhooks/{name}")
                                        if self.profile == "default" else (f"/p/{self.profile}/webhooks/{name}",))):
             raise RouteError("route_config_invalid", "Route URL must be HTTPS (or loopback HTTP), with an exact route path")
-        if mode == "new_session" and route.get("destination") != {
-                key: origin.get(key) for key in ("platform", "chat_id", "thread_id")}:
-            raise RouteError("route_destination_mismatch", "Operator destination must match the trusted origin")
+        if mode == "new_session":
+            destination = {key: origin.get(key) for key in ("platform", "chat_id", "thread_id")}
+            if route.get("destination") != destination:
+                raise RouteError("route_destination_mismatch", "Operator destination must match the trusted origin")
+            endpoint = _native_endpoint(url)
+            if endpoint is None:
+                raise RouteError("route_config_invalid", "Invalid native route URL")
+            for entry in entries:
+                peer = entry.get(mode) if isinstance(entry, dict) else None
+                if (isinstance(peer, dict) and peer.get("destination") != destination
+                        and _native_endpoint(peer.get("url")) == endpoint):
+                    raise RouteError("route_destination_conflict", "One native endpoint cannot have two fixed destinations")
         return route
 
     def preflight(self, origin, mode, skills):

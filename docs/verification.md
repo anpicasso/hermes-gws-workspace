@@ -1,5 +1,15 @@
 # Verification record
 
+## Shared-source lifecycle regression coverage
+
+The integrated repair passed **247 tests with zero skips** in an isolated home, with the installed Hermes source explicitly selected. Parent verification reproduced eight failing lifecycle regressions against the previous baseline before running the repaired suite. Doctor and Validate passed. Native endpoint configuration now also rejects contradictory fixed destinations and the reserved bridge prefix for new-session routes.
+
+`tests/test_watch_source_lifecycle.py` covers rearming after a matched one-shot, preservation of a collecting sibling's committed/staged cursor, recovery of stranded active watches without a new push, health failures for stopped or missing source links, expiry, and start/drain/remote-cleanup races. Completed watches retain their pending deliveries but no longer own the Google feed.
+
+`tests/test_watch_multisession_regression.py` exercises shared Gmail, Drive and Calendar sources with watches in the same and different sessions, matching/nonmatching filters, multiple principals, and mixed same-session bridge/native new-session delivery. It also exercises the real native webhook admission handler and replay deduplication in an isolated store. These are automated fixture/admission tests, **not proof of completed live model replies in every combination**.
+
+Account lifecycle locking serializes baseline registration with cursor draining. A long drain can cause a new start to hit the existing account-lock timeout and require a retry. Collection failures or outbox backpressure hold a shared page for retry instead of silently dropping it; independent delivery retries do not block sibling destinations. Recovery still depends on the provider retaining the history cursor.
+
 ## v0.10.0 — short-command live verification
 
 The draft-confirmation implementation passed **231 tests, zero skipped**, independent parent rerun included, against unchanged upstream Hermes `0f602c5f6f18615632535251d62a2db74ce93b69`. The suite exercises the real plugin manager and gateway command dispatcher, Gmail/Drive/Calendar start–status–stop in both delivery modes, sender/profile/session rejection and simulated injection to the saved session. Google responses and final message injection are test fixtures, not live delivery evidence. The suite also covers local-only preparation, immutable drafts, expiry, wrong-session/actor rejection, replay, concurrent confirmation and shared-Drive source deduplication. Doctor and Validate passed with **16 tools and two hooks**; scanner cautions are `context_exfil` on the skill paragraph instructing the agent to return a confirmation command in the current conversation (not conversation-history export), and `py_read_secrets_file` on the synthetic empty dotenv fixture in `tests/test_account_cli.py`.

@@ -34,9 +34,11 @@ except ImportError:  # pragma: no cover - aiohttp is an existing Hermes dependen
 if __package__:
     from . import watch as W
     from . import watch_calendar, watch_drive, watch_gmail, watch_routes
+    from .account_lifecycle import lifecycle_guard
     from .router import bounded_gws
     from . import watch_pubsub
 else:  # Direct module use by the standalone test suite.
+    from account_lifecycle import lifecycle_guard
     from router import bounded_gws  # type: ignore
     import watch_pubsub
     import watch as W  # type: ignore
@@ -334,6 +336,21 @@ class Worker:
 
     # --- delta reading ---------------------------------------------------
     def drain_source(self, source):
+        # Start holds this barrier from baseline capture through linking the new watch.
+        # Never advance the shared cursor past a watch still being registered.
+        try:
+            with lifecycle_guard(self.home / "gws-oauth", source["account"], wait=False):
+                current = self.store.get_source(source["source_id"])
+                if current is None or current["state"] != "active":
+                    return {"ok": True, "skipped": "inactive source"}
+                return self._drain_source(current)
+        except TimeoutError:
+            return {"ok": True, "skipped": "account lifecycle busy"}
+        except (OSError, ValueError):
+            self.store.update_source(source["source_id"], last_error="source lifecycle guard failed")
+            return {"ok": False, "error_code": "source_lifecycle_error", "retryable": True}
+
+    def _drain_source(self, source):
         watches = self.store.consumers(source["source_id"])
         if not watches:
             return {"ok": True, "skipped": "no consumers"}
@@ -514,9 +531,11 @@ class Worker:
     # --- cleanup ---------------------------------------------------------
     def _stop_source(self, source):
         key = "backoff:stop:" + source["source_id"]
+        remotes = self.store.claim_unused_remotes(source["source_id"])
+        if remotes is None:
+            return True  # A collecting watch owns this lease.
         if not self._retry_due(key):
             return False
-        remotes = self.store.remotes(source_id=source["source_id"])
         failed = False
         for remote in remotes:
             if remote["kind"] == "gmail_watch":
@@ -551,7 +570,7 @@ class Worker:
                 continue
             sources_ok = True
             for source in self.store.sources_for(watch["watch_id"]):
-                if self.store.active_consumers_excluding(source["source_id"], watch["watch_id"]) == 0:
+                if source["state"] != "stopped":
                     sources_ok = self._stop_source(source) and sources_ok
             delivered = self.store.delivery_summary(watch["watch_id"])
             route_name = watch["route_name"] or watch["bridge_name"]
@@ -576,6 +595,7 @@ class Worker:
     # --- loop ------------------------------------------------------------
     def run_once(self):
         self.store.expire_due()
+        self.store.recover_stopped_sources()
         self.store.recover_stale_outbox(self.clock())
         for source in self.store.list_sources(active_only=True):
             watches = self.store.consumers(source["source_id"])
@@ -588,8 +608,8 @@ class Worker:
             if source is None:
                 continue
             pending = self.store.pending_hints(source["source_id"])
-            reconcile_due = ((source.get("last_reconcile") or 0) + self.reconcile_seconds
-                             <= self.clock())
+            reconciled = source["last_reconcile"]
+            reconcile_due = reconciled is None or reconciled + self.reconcile_seconds <= self.clock()
             if source.get("cursor_staged") or pending or reconcile_due:
                 self.drain_source(source)
         self.cleanup()
@@ -680,12 +700,14 @@ def health(store, lock_path, *, stale_seconds=60):
                         "last_error": source.get("last_error"),
                         "pending_hints": len(store.pending_hints(source["source_id"])),
                         "retry": retries or None})
-    healthy = bool(held) and age is not None and age <= stale_seconds
+    uncollectable = store.uncollectable_watches()
+    healthy = bool(held) and age is not None and age <= stale_seconds and not uncollectable
     return {"ok": healthy, "worker_running": held,
             "heartbeat": W.now_iso(float(beat)) if beat else None,
             "heartbeat_age_seconds": int(age) if age is not None else None,
             "stale_after_seconds": stale_seconds,
             "watches": dict(counts),
+            "uncollectable_watches": uncollectable,
             "cleanup_pending": sum(1 for row in watches if row["cleanup_state"] == "pending"),
             "routes_retained": sum(1 for row in watches if row["cleanup_state"] == "retained"),
             "sources": sources}
@@ -737,7 +759,7 @@ def main(argv=None):
     stop.add_argument("watch_id")
     stop.add_argument("--home", required=True)
     status = sub.add_parser("status", help="worker heartbeat and watch/source diagnostics; "
-                                           "exit 1 when the worker is not running or stale")
+                                           "exit 1 for an absent/stale worker or an uncollectable watch")
     status.add_argument("--home", required=True)
     status.add_argument("--stale-seconds", type=int, default=60)
     args = parser.parse_args(argv)

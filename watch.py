@@ -27,7 +27,7 @@ MAX_SKILLS = 20
 MAX_BACKLOG = 1000
 MAX_DRAFTS = 64
 DRAFT_TTL_SECONDS = 600
-ACTIVE_STATES = ("active", "matched")
+ACTIVE_STATES = ("active", "matched")  # Delivery eligibility, not source ownership.
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@:+-]{0,1023}\Z")
 _EMAIL = re.compile(r"[^@\s<>]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}\Z")
@@ -330,6 +330,11 @@ _WATCH_FIELDS = {
     "delivery_state", "last_error", "gap", "route_name", "bridge_name",
 }
 
+# A matched one-shot owns its reserved outbox row, not the Google feed.
+_COLLECTING = "w.state='active' AND w.expires_at>?"
+_COLLECTORS = " FROM watch_sources x JOIN watches w USING (watch_id) WHERE " + _COLLECTING
+_RESUME_STOPPED = "UPDATE sources SET state='active', last_reconcile=NULL WHERE state='stopped' "
+
 
 def _backlog_full(conn, watch_id):
     row = conn.execute(
@@ -429,10 +434,8 @@ class WatchStore:
                      json.dumps(source["resource"], sort_keys=True),
                      json.dumps(source.get("query", {}), sort_keys=True), source.get("cursor"),
                      source.get("state", "active"), record["created_at"]))
-                consumers = conn.execute(
-                    "SELECT 1 FROM watch_sources x JOIN watches w ON w.watch_id=x.watch_id "
-                    "WHERE x.source_id=? AND w.state IN ('active','matched') LIMIT 1",
-                    (source_id,)).fetchone()
+                consumers = conn.execute("SELECT 1" + _COLLECTORS + " AND x.source_id=? LIMIT 1",
+                                         (self.clock(), source_id)).fetchone()
                 if consumers is None:
                     conn.execute(
                         "UPDATE sources SET cursor=?, cursor_staged=NULL, state='active', "
@@ -441,6 +444,9 @@ class WatchStore:
                     # A fresh explicit start retries registration immediately.
                     conn.execute("DELETE FROM meta WHERE key IN (?,?)",
                                  ("backoff:sub:" + source_id, "backoff:stop:" + source_id))
+                else:
+                    # An older collecting watch still needs its checkpoint, even if stranded.
+                    conn.execute(_RESUME_STOPPED + "AND source_id=?", (source_id,))
                 conn.execute("INSERT INTO watch_sources (watch_id, source_id) VALUES (?,?)",
                              (record["watch_id"], source_id))
         return self.get_watch(record["watch_id"])
@@ -454,9 +460,8 @@ class WatchStore:
         now = self.clock() if now is None else now
         with self.read() as conn:
             row = conn.execute(
-                "SELECT w.* FROM watches w JOIN watch_sources s USING (watch_id) "
-                "WHERE fingerprint=? AND s.source_id=? AND state IN ('active','matched') "
-                "AND expires_at>? ORDER BY created_at DESC LIMIT 1", (fingerprint, source_id, now)).fetchone()
+                "SELECT w.*" + _COLLECTORS + " AND fingerprint=? AND x.source_id=? "
+                "ORDER BY created_at DESC LIMIT 1", (now, fingerprint, source_id)).fetchone()
         return dict(row) if row is not None else None
 
     def list_watches(self, *, service=None, profile=None, principal=None, active_only=False):
@@ -590,25 +595,23 @@ class WatchStore:
     def consumers(self, source_id):
         with self.read() as conn:
             rows = conn.execute(
-                "SELECT w.* FROM watches w JOIN watch_sources x ON x.watch_id=w.watch_id "
-                "WHERE x.source_id=? AND w.state IN ('active','matched') ORDER BY w.created_at",
-                (source_id,)).fetchall()
+                "SELECT w.*" + _COLLECTORS + " AND x.source_id=? ORDER BY w.created_at",
+                (self.clock(), source_id)).fetchall()
         return [dict(row) for row in rows]
 
-    def all_consumer_count(self, source_id):
-        with self.read() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM watches w JOIN watch_sources x ON x.watch_id=w.watch_id "
-                "WHERE x.source_id=? AND w.state IN ('active','matched')", (source_id,)).fetchone()
-        return int(row["n"])
+    def recover_stopped_sources(self):
+        with self.tx() as conn:
+            conn.execute(_RESUME_STOPPED + "AND source_id IN (SELECT x.source_id" + _COLLECTORS + ")",
+                         (self.clock(),))
 
-    def active_consumers_excluding(self, source_id, watch_id):
+    def uncollectable_watches(self):
         with self.read() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM watches w JOIN watch_sources x ON x.watch_id=w.watch_id "
-                "WHERE x.source_id=? AND w.watch_id!=? AND w.state='active'",
-                (source_id, watch_id)).fetchone()
-        return int(row["n"])
+            rows = conn.execute(
+                "SELECT w.watch_id, x.source_id, s.state AS source_state FROM watches w "
+                "LEFT JOIN watch_sources x USING (watch_id) LEFT JOIN sources s USING (source_id) "
+                "WHERE " + _COLLECTING + " AND s.state IS NOT 'active' ORDER BY w.watch_id, x.source_id",
+                (self.clock(),)).fetchall()
+        return [dict(row) for row in rows]
 
     def bump_source(self, source_id, **fields):
         with self.tx() as conn:
@@ -964,6 +967,17 @@ class WatchStore:
         with self.tx() as conn:
             conn.execute("DELETE FROM remotes WHERE remote_id=?", (remote_id,))
 
+    def claim_unused_remotes(self, source_id):
+        """Invalidate old leases before network I/O; a racing start must not trust them after a crash."""
+        with self.tx() as conn:
+            if conn.execute("SELECT 1" + _COLLECTORS + " AND x.source_id=? LIMIT 1",
+                            (self.clock(), source_id)).fetchone():
+                return None
+            conn.execute("UPDATE remotes SET state='cleanup_pending' WHERE source_id=? "
+                         "AND state IN ('active','pending')", (source_id,))
+            rows = conn.execute("SELECT * FROM remotes WHERE source_id=?", (source_id,)).fetchall()
+        return [dict(row) for row in rows]
+
     def stop_source_if_unused(self, source_id):
         """Mark a source stopped only if no active watch re-armed it meanwhile.
 
@@ -973,8 +987,7 @@ class WatchStore:
         with self.tx() as conn:
             cursor = conn.execute(
                 "UPDATE sources SET state='stopped' WHERE source_id=? AND NOT EXISTS ("
-                "SELECT 1 FROM watch_sources x JOIN watches w ON w.watch_id=x.watch_id "
-                "WHERE x.source_id=? AND w.state='active')", (source_id, source_id))
+                "SELECT 1" + _COLLECTORS + " AND x.source_id=?)", (source_id, self.clock(), source_id))
             return bool(cursor.rowcount)
 
     def prune(self, now=None, *, retention_seconds=7 * 86400):
@@ -1058,6 +1071,7 @@ def watch_status(store, watch):
     delivery = store.delivery_summary(watch["watch_id"])
     sources = store.sources_for(watch["watch_id"])
     lease = min((s.get("expires_at") or 0 for s in sources), default=0)
+    reconciled = min((s.get("last_reconcile") or 0 for s in sources), default=0)
     remotes = store.remotes(watch_id=watch["watch_id"])
     return {
         "watch_id": watch["watch_id"],
@@ -1082,8 +1096,7 @@ def watch_status(store, watch):
         "delivery_completion": "unobservable" if delivery["counts"].get("admitted") else None,
         "backlog": delivery["backlog"],
         "lease_expiry": now_iso(lease) if lease else None,
-        "last_reconcile": now_iso(min((s.get("last_reconcile") or 0 for s in sources), default=0))
-        if sources else None,
+        "last_reconcile": now_iso(reconciled) if reconciled else None,
         "remote_cleanup": watch["cleanup_state"],
         "cleanup_reason": watch["cleanup_reason"],
         "gap": watch["gap"],
